@@ -96,9 +96,9 @@ services:
       - hospital-network
     restart: unless-stopped
 
-  tests:
+  test:
     image: python:3.12-slim                # используем готовый образ
-    container_name: hospital-tests
+    container_name: hospital-test
     depends_on:
       postgres:
         condition: service_healthy
