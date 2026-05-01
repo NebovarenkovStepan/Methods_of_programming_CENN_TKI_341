@@ -109,19 +109,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run Laboratory service unit tests
+      - name: Install dependencies for all Python services
         run: |
-          cd laboratory-python
-          pip install -r requirements.txt
+          pip install -r laboratory-python/requirements.txt
+          pip install -r llm-python/requirements.txt
           pip install pytest
-          python -m pytest test_laboratory_services.py -v --tb=short || true
+
+      - name: Run Laboratory service unit tests
+        run: python -m pytest test/test_laboratory_services.py -v --tb=short || true
 
       - name: Run LLM service unit tests
-        run: |
-          cd llm-python
-          pip install -r requirements.txt
-          pip install pytest
-          python -m pytest test_llm_service.py -v --tb=short || true
+        run: python -m pytest test/test_llm_service.py -v --tb=short || true
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -154,11 +152,12 @@ jobs:
       - name: Update image tags in k8s manifests
         run: |
           cd k8s
-          sed -i "s#\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/laboratory:.*#\1ghcr.io/${REPO_LOWER}/laboratory:${{ github.sha }}#g" laboratory-deployment.yaml
-          sed -i "s#\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/llm:.*#\1ghcr.io/${REPO_LOWER}/llm:${{ github.sha }}#g" llm-deployment.yaml
-          sed -i "s#\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:.*#\1ghcr.io/${REPO_LOWER}/pharmacy:${{ github.sha }}#g" pharmacy-deployment.yaml
-          sed -i "s#\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/portal:.*#\1ghcr.io/${REPO_LOWER}/portal:${{ github.sha }}#g" portal-deployment.yaml
-          sed -i "s#\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:.*#\1ghcr.io/${REPO_LOWER}/tests:${{ github.sha }}#g" test-job.yaml
+          # Заменяем всю строку image для каждого сервиса, не привязываясь к точному пути
+          sed -i "s#image:.*laboratory:.*#image: ghcr.io/${REPO_LOWER}/laboratory:${{ github.sha }}#g" laboratory-deployment.yaml
+          sed -i "s#image:.*llm:.*#image: ghcr.io/${REPO_LOWER}/llm:${{ github.sha }}#g" llm-deployment.yaml
+          sed -i "s#image:.*pharmacy:.*#image: ghcr.io/${REPO_LOWER}/pharmacy:${{ github.sha }}#g" pharmacy-deployment.yaml
+          sed -i "s#image:.*portal:.*#image: ghcr.io/${REPO_LOWER}/portal:${{ github.sha }}#g" portal-deployment.yaml
+          sed -i "s#image:.*tests:.*#image: ghcr.io/${REPO_LOWER}/tests:${{ github.sha }}#g" test-job.yaml
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
           sed -i "s#{{ .CommitSHA | trunc 8 }}#${SHORT_SHA}#g" test-job.yaml
           git config user.name "github-actions[bot]"
