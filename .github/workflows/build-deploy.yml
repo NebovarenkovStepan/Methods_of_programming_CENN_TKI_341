@@ -8,7 +8,7 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  # 1) Сборка и публикация образов
+  # ---------- Build ----------
   build:
     name: Build and Push Images
     runs-on: ubuntu-latest
@@ -31,7 +31,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check which images already exist
+        id: check
+        run: |
+          REPO="${{ steps.lowercase.outputs.repo_lower }}"
+          SHA="${{ github.sha }}"
+          services=("laboratory" "llm" "pharmacy" "portal" "tests")
+          for svc in "${services[@]}"; do
+            if docker manifest inspect ${{ env.REGISTRY }}/${REPO}/${svc}:${SHA} > /dev/null 2>&1; then
+              echo "${svc}_exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "${svc}_exists=false" >> $GITHUB_OUTPUT
+            fi
+          done
+
       - name: Build and push Laboratory
+        if: steps.check.outputs.laboratory_exists != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./laboratory-python
@@ -41,6 +56,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/laboratory:${{ github.sha }}
 
       - name: Build and push LLM
+        if: steps.check.outputs.llm_exists != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./llm-python
@@ -50,6 +66,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/llm:${{ github.sha }}
 
       - name: Build and push Pharmacy
+        if: steps.check.outputs.pharmacy_exists != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./pharmacy-go
@@ -59,6 +76,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/pharmacy:${{ github.sha }}
 
       - name: Build and push Portal
+        if: steps.check.outputs.portal_exists != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./portal-go
@@ -67,17 +85,17 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/portal:latest
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/portal:${{ github.sha }}
 
-      - name: Build and push Tests image (for integration tests)
+      - name: Build and push Tests image
+        if: steps.check.outputs.tests_exists != 'true'
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./test/Dockerfile
+          context: ./test
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/tests:latest
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/tests:${{ github.sha }}
 
-  # 2) Запуск модульных тестов (без поднятия кластера)
+  # ---------- Unit Tests ----------
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -96,7 +114,6 @@ jobs:
           cd laboratory-python
           pip install -r requirements.txt
           pip install pytest
-          # Путь к тестовому файлу может отличаться – настрой под себя
           python -m pytest test_laboratory_services.py -v --tb=short || true
 
       - name: Run LLM service unit tests
@@ -121,7 +138,7 @@ jobs:
           cd portal-go
           go test ./... -v || true
 
-  # 3) Обновление манифестов и пуш (ArgoCD подхватит изменения)
+  # ---------- Deploy ----------
   deploy:
     name: Update Manifests
     runs-on: ubuntu-latest
@@ -137,7 +154,6 @@ jobs:
       - name: Update image tags in k8s manifests
         run: |
           cd k8s
-          # Разделитель # вместо | — избегает конфликтов с URL
           sed -i "s#\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/laboratory:.*#\1ghcr.io/${REPO_LOWER}/laboratory:${{ github.sha }}#g" laboratory-deployment.yaml
           sed -i "s#\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/llm:.*#\1ghcr.io/${REPO_LOWER}/llm:${{ github.sha }}#g" llm-deployment.yaml
           sed -i "s#\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:.*#\1ghcr.io/${REPO_LOWER}/pharmacy:${{ github.sha }}#g" pharmacy-deployment.yaml
