@@ -12,9 +12,9 @@ spec:
       containers:
         - name: test
 <<<<<<< HEAD
- image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:latest         
+ image: ghcr.io//tests:b0531ed8867e1b453b22deb99893850ce8e7c094
 =======
-          image: ghcr.io//tests:73b7f5b8e17fec52a4d4421b3000a1e247beae0a
+          image: ghcr.io//tests:b0531ed8867e1b453b22deb99893850ce8e7c094
 >>>>>>> 3a6798ff1d7438d7f1272280ad592ba16ce25650
           env:
             - name: PORTAL_URL
