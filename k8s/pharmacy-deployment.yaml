@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: pharmacy
-          image: ghcr.io//pharmacy:cc32b6b5f0be9a5c514568b07e21a1cfb9da858d
+          image: ghcr.io//pharmacy:cc344b5a2b384e98f47a64472a1569d3fc409b39
           env:
             - name: DATABASE_URL
               value: "postgres://hospital:hospital_password@postgres:5432/hospital_db?sslmode=disable"
