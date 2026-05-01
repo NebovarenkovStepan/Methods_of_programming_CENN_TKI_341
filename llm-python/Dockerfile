@@ -31,5 +31,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run tests and start application
-RUN pip install --no-cache-dir pytest pytest-cov
-CMD sh -c "pytest test_llm_service.py -v --tb=short && uvicorn main:app --host 0.0.0.0 --port 8000"
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
