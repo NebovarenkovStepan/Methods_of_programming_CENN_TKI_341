@@ -89,7 +89,8 @@ jobs:
         if: steps.check.outputs.tests_exists != 'true'
         uses: docker/build-push-action@v5
         with:
-          context: ./test
+          context: ./test               # контекст – папка с тестами
+          # Dockerfile ищется автоматически внутри ./test
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/tests:latest
