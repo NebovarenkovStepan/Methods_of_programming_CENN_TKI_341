@@ -2,17 +2,18 @@ name: Build, Push and Update Manifests
 
 on:
   push:
-    branches: [ "argo-demo" ]   # запускать только при пуше в эту ветку
+    branches: [ "argo-demo" ]
 
 env:
   REGISTRY: ghcr.io
+  REPO_LOWER: ${{ toLower(github.repository) }}
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # чтобы git push мог обновлять файлы
-      packages: write       # чтобы пушить образы в GHCR
+      contents: write
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -25,15 +26,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ------------------ Сборка микросервисов ------------------
+      # ------------------ Сервисы ------------------
       - name: Build and push Laboratory
         uses: docker/build-push-action@v5
         with:
           context: ./laboratory-python
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/laboratory:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/laboratory:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/laboratory:latest
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/laboratory:${{ github.sha }}
 
       - name: Build and push LLM
         uses: docker/build-push-action@v5
@@ -41,8 +42,8 @@ jobs:
           context: ./llm-python
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/llm:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/llm:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/llm:latest
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/llm:${{ github.sha }}
 
       - name: Build and push Pharmacy
         uses: docker/build-push-action@v5
@@ -50,8 +51,8 @@ jobs:
           context: ./pharmacy-go
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/pharmacy:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/pharmacy:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/pharmacy:latest
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/pharmacy:${{ github.sha }}
 
       - name: Build and push Portal
         uses: docker/build-push-action@v5
@@ -59,40 +60,33 @@ jobs:
           context: ./portal-go
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/portal:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/portal:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/portal:latest
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/portal:${{ github.sha }}
 
-      # ------------------ Сборка тестового образа ------------------
+      # ------------------ Тесты ------------------
       - name: Build and push Tests
         uses: docker/build-push-action@v5
         with:
-          context: .                       # контекст — корень репозитория
-          file: ./tests/Dockerfile         # путь к Dockerfile тестов
+          context: .
+          file: ./tests/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/tests:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/tests:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/tests:latest
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/tests:${{ github.sha }}
 
-      # ------------------ Обновление манифестов в k8s/ ------------------
+      # ------------------ Обновление манифестов ------------------
       - name: Update image tags and test job name
         run: |
           cd k8s
-          # Заменяем образы всех сервисов на ${{ github.sha }}
-          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/laboratory:.*|\1ghcr.io/${{ github.repository }}/laboratory:${{ github.sha }}|g" laboratory-deployment.yaml
-          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/llm:.*|\1ghcr.io/${{ github.repository }}/llm:${{ github.sha }}|g" llm-deployment.yaml
-          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/pharmacy:.*|\1ghcr.io/${{ github.repository }}/pharmacy:${{ github.sha }}|g" pharmacy-deployment.yaml
-          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/portal:.*|\1ghcr.io/${{ github.repository }}/portal:${{ github.sha }}|g" portal-deployment.yaml
-
-          # Обновляем образ тестов
-          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/tests:.*|\1ghcr.io/${{ github.repository }}/tests:${{ github.sha }}|g" test-job.yaml
-
-          # Генерируем короткий SHA (8 символов) для имени Job
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/laboratory:.*|\1ghcr.io/${{ env.REPO_LOWER }}/laboratory:${{ github.sha }}|g" laboratory-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/llm:.*|\1ghcr.io/${{ env.REPO_LOWER }}/llm:${{ github.sha }}|g" llm-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:.*|\1ghcr.io/${{ env.REPO_LOWER }}/pharmacy:${{ github.sha }}|g" pharmacy-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/portal:.*|\1ghcr.io/${{ env.REPO_LOWER }}/portal:${{ github.sha }}|g" portal-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:.*|\1ghcr.io/${{ env.REPO_LOWER }}/tests:${{ github.sha }}|g" test-job.yaml
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
           sed -i "s|{{ .CommitSHA | trunc 8 }}|${SHORT_SHA}|g" test-job.yaml
-
-          # Коммитим и пушим изменения
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add *.yaml
-          git commit -m "🔄 Update images to ${{ github.sha }}" || echo "No changes to commit"
+          git commit -m "🔄 Update images to ${{ github.sha }}" || echo "No changes"
           git push
