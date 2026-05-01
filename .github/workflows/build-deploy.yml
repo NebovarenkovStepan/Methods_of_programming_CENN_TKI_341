@@ -6,7 +6,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  REPO_LOWER: ${{ toLower(github.repository) }}
 
 jobs:
   build-and-deploy:
@@ -16,6 +15,11 @@ jobs:
       packages: write
 
     steps:
+      # Шаг 1: Получаем имя репозитория в нижнем регистре
+      - name: Set lowercase repository name
+        run: |
+          echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -26,7 +30,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ------------------ Сервисы ------------------
+      # ----- Сборка сервисов -----
       - name: Build and push Laboratory
         uses: docker/build-push-action@v5
         with:
@@ -63,7 +67,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/portal:latest
             ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/portal:${{ github.sha }}
 
-      # ------------------ Тесты ------------------
+      # ----- Сборка тестов -----
       - name: Build and push Tests
         uses: docker/build-push-action@v5
         with:
@@ -74,17 +78,20 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/tests:latest
             ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/tests:${{ github.sha }}
 
-      # ------------------ Обновление манифестов ------------------
+      # ----- Обновление манифестов -----
       - name: Update image tags and test job name
         run: |
           cd k8s
-          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/laboratory:.*|\1ghcr.io/${{ env.REPO_LOWER }}/laboratory:${{ github.sha }}|g" laboratory-deployment.yaml
-          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/llm:.*|\1ghcr.io/${{ env.REPO_LOWER }}/llm:${{ github.sha }}|g" llm-deployment.yaml
-          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:.*|\1ghcr.io/${{ env.REPO_LOWER }}/pharmacy:${{ github.sha }}|g" pharmacy-deployment.yaml
-          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/portal:.*|\1ghcr.io/${{ env.REPO_LOWER }}/portal:${{ github.sha }}|g" portal-deployment.yaml
-          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:.*|\1ghcr.io/${{ env.REPO_LOWER }}/tests:${{ github.sha }}|g" test-job.yaml
+          # Заменяем образы в YAML-файлах (используем $REPO_LOWER из окружения)
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/laboratory:.*|\1ghcr.io/${REPO_LOWER}/laboratory:${{ github.sha }}|g" laboratory-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/llm:.*|\1ghcr.io/${REPO_LOWER}/llm:${{ github.sha }}|g" llm-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:.*|\1ghcr.io/${REPO_LOWER}/pharmacy:${{ github.sha }}|g" pharmacy-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/portal:.*|\1ghcr.io/${REPO_LOWER}/portal:${{ github.sha }}|g" portal-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:.*|\1ghcr.io/${REPO_LOWER}/tests:${{ github.sha }}|g" test-job.yaml
+          # Генерируем уникальное имя для Job
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
           sed -i "s|{{ .CommitSHA | trunc 8 }}|${SHORT_SHA}|g" test-job.yaml
+          # Коммитим изменения и пушим
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add *.yaml
