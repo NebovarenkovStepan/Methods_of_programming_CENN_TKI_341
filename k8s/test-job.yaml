@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: hospital-tests-{{ .CommitSHA | trunc 8 }}
+  name: hospital-tests-dcd6d5ee
   annotations:
     argocd.argoproj.io/hook: PostSync
     argocd.argoproj.io/hook-delete-policy: HookSucceeded
@@ -11,7 +11,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: test
-          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:latest
+          image: ghcr.io//tests:dcd6d5ee54d55acd45e9b52a945dfe9744fcc86e
           env:
             - name: PORTAL_URL
               value: http://portal:8080
