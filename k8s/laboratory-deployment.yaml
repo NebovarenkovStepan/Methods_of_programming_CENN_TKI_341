@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: laboratory
-          image: ghcr.io/laboratory:cc344b5a2b384e98f47a64472a1569d3fc409b39
+          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/laboratory:b9154da0b2f5f4db11239e38671c39b870dc5843
           env:
             - name: DATABASE_URL
               value: postgresql://hospital:hospital_password@postgres:5432/hospital_db

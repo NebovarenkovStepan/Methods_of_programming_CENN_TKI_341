@@ -11,7 +11,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: test
-          image: ghcr.io/tests:cc344b5a2b384e98f47a64472a1569d3fc409b39
+          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:b9154da0b2f5f4db11239e38671c39b870dc5843
           env:
             - name: PORTAL_URL
               value: http://portal:8080
