@@ -10,7 +10,7 @@ spec:
     spec:
       restartPolicy: Never
       containers:
-        - name: tests
+        - name: test
           image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:latest
           env:
             - name: PORTAL_URL

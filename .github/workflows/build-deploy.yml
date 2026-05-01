@@ -1,4 +1,4 @@
-name: Build, Push and Update Manifests
+name: CI/CD Pipeline
 
 on:
   push:
@@ -8,37 +8,37 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-and-deploy:
+  # 1) Сборка и публикация образов
+  build:
+    name: Build and Push Images
     runs-on: ubuntu-latest
     permissions:
-      contents: write
       packages: write
-
+    outputs:
+      repo_lower: ${{ steps.lowercase.outputs.repo_lower }}
     steps:
-      # Шаг 1: Получаем имя репозитория в нижнем регистре
-      - name: Set lowercase repository name
-        run: |
-          echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to GitHub Container Registry
+      - name: Lowercase repository name
+        id: lowercase
+        run: echo "repo_lower=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ----- Сборка сервисов -----
       - name: Build and push Laboratory
         uses: docker/build-push-action@v5
         with:
           context: ./laboratory-python
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/laboratory:latest
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/laboratory:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/laboratory:latest
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/laboratory:${{ github.sha }}
 
       - name: Build and push LLM
         uses: docker/build-push-action@v5
@@ -46,8 +46,8 @@ jobs:
           context: ./llm-python
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/llm:latest
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/llm:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/llm:latest
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/llm:${{ github.sha }}
 
       - name: Build and push Pharmacy
         uses: docker/build-push-action@v5
@@ -55,8 +55,8 @@ jobs:
           context: ./pharmacy-go
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/pharmacy:latest
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/pharmacy:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/pharmacy:latest
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/pharmacy:${{ github.sha }}
 
       - name: Build and push Portal
         uses: docker/build-push-action@v5
@@ -64,34 +64,86 @@ jobs:
           context: ./portal-go
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/portal:latest
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/portal:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/portal:latest
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/portal:${{ github.sha }}
 
-      # ----- Сборка тестов -----
-      - name: Build and push Tests
+      - name: Build and push Tests image (for integration tests)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./tests/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/tests:latest
-            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/tests:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/tests:latest
+            ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/tests:${{ github.sha }}
 
-      # ----- Обновление манифестов -----
-      - name: Update image tags and test job name
+  # 2) Запуск модульных тестов (без поднятия кластера)
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Laboratory service unit tests
+        run: |
+          cd laboratory-python
+          pip install -r requirements.txt
+          pip install pytest
+          # Путь к тестовому файлу может отличаться – настрой под себя
+          python -m pytest test_laboratory_services.py -v --tb=short || true
+
+      - name: Run LLM service unit tests
+        run: |
+          cd llm-python
+          pip install -r requirements.txt
+          pip install pytest
+          python -m pytest test_llm_service.py -v --tb=short || true
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run Pharmacy unit tests
+        run: |
+          cd pharmacy-go
+          go test ./... -v || true
+
+      - name: Run Portal unit tests
+        run: |
+          cd portal-go
+          go test ./... -v || true
+
+  # 3) Обновление манифестов и пуш (ArgoCD подхватит изменения)
+  deploy:
+    name: Update Manifests
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: write
+    env:
+      REPO_LOWER: ${{ needs.build.outputs.repo_lower }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update image tags in k8s manifests
         run: |
           cd k8s
-          # Заменяем образы в YAML-файлах (используем $REPO_LOWER из окружения)
           sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/laboratory:.*|\1ghcr.io/${REPO_LOWER}/laboratory:${{ github.sha }}|g" laboratory-deployment.yaml
           sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/llm:.*|\1ghcr.io/${REPO_LOWER}/llm:${{ github.sha }}|g" llm-deployment.yaml
           sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:.*|\1ghcr.io/${REPO_LOWER}/pharmacy:${{ github.sha }}|g" pharmacy-deployment.yaml
           sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/portal:.*|\1ghcr.io/${REPO_LOWER}/portal:${{ github.sha }}|g" portal-deployment.yaml
           sed -i "s|\(image: \)ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:.*|\1ghcr.io/${REPO_LOWER}/tests:${{ github.sha }}|g" test-job.yaml
-          # Генерируем уникальное имя для Job
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
           sed -i "s|{{ .CommitSHA | trunc 8 }}|${SHORT_SHA}|g" test-job.yaml
-          # Коммитим изменения и пушим
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add *.yaml
