@@ -115,11 +115,16 @@ jobs:
           pip install -r llm-python/requirements.txt
           pip install pytest
 
+      # Исправлено: добавляем PYTHONPATH=., чтобы Python видел lis, service и т.д.
       - name: Run Laboratory service unit tests
-        run: python -m pytest test/test_laboratory_services.py -v --tb=short || true
+        run: |
+          cd laboratory-python
+          PYTHONPATH=.. python -m pytest ../test/test_laboratory_services.py -v --tb=short || true
 
       - name: Run LLM service unit tests
-        run: python -m pytest test/test_llm_service.py -v --tb=short || true
+        run: |
+          cd llm-python
+          PYTHONPATH=.. python -m pytest ../test/test_llm_service.py -v --tb=short || true
 
       - name: Set up Go
         uses: actions/setup-go@v5
