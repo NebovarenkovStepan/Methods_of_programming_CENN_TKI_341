@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pharmacy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pharmacy
+  template:
+    metadata:
+      labels:
+        app: pharmacy
+    spec:
+      containers:
+        - name: pharmacy
+          image: ghcr.io/NebovarenkovStepan/Methods_of_programming_CENN_TKI_341/pharmacy:latest
+          env:
+            - name: DATABASE_URL
+              value: "postgres://hospital:hospital_password@postgres:5432/hospital_db?sslmode=disable"
+            - name: PORT
+              value: "8081"
+          ports:
+            - containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 15

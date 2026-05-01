@@ -1,0 +1,98 @@
+name: Build, Push and Update Manifests
+
+on:
+  push:
+    branches: [ "argo-demo" ]   # запускать только при пуше в эту ветку
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # чтобы git push мог обновлять файлы
+      packages: write       # чтобы пушить образы в GHCR
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------ Сборка микросервисов ------------------
+      - name: Build and push Laboratory
+        uses: docker/build-push-action@v5
+        with:
+          context: ./laboratory-python
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/laboratory:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/laboratory:${{ github.sha }}
+
+      - name: Build and push LLM
+        uses: docker/build-push-action@v5
+        with:
+          context: ./llm-python
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/llm:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/llm:${{ github.sha }}
+
+      - name: Build and push Pharmacy
+        uses: docker/build-push-action@v5
+        with:
+          context: ./pharmacy-go
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/pharmacy:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/pharmacy:${{ github.sha }}
+
+      - name: Build and push Portal
+        uses: docker/build-push-action@v5
+        with:
+          context: ./portal-go
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/portal:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/portal:${{ github.sha }}
+
+      # ------------------ Сборка тестового образа ------------------
+      - name: Build and push Tests
+        uses: docker/build-push-action@v5
+        with:
+          context: .                       # контекст — корень репозитория
+          file: ./tests/Dockerfile         # путь к Dockerfile тестов
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/tests:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/tests:${{ github.sha }}
+
+      # ------------------ Обновление манифестов в k8s/ ------------------
+      - name: Update image tags and test job name
+        run: |
+          cd k8s
+          # Заменяем образы всех сервисов на ${{ github.sha }}
+          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/laboratory:.*|\1ghcr.io/${{ github.repository }}/laboratory:${{ github.sha }}|g" laboratory-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/llm:.*|\1ghcr.io/${{ github.repository }}/llm:${{ github.sha }}|g" llm-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/pharmacy:.*|\1ghcr.io/${{ github.repository }}/pharmacy:${{ github.sha }}|g" pharmacy-deployment.yaml
+          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/portal:.*|\1ghcr.io/${{ github.repository }}/portal:${{ github.sha }}|g" portal-deployment.yaml
+
+          # Обновляем образ тестов
+          sed -i "s|\(image: \)ghcr.io/${{ github.repository }}/tests:.*|\1ghcr.io/${{ github.repository }}/tests:${{ github.sha }}|g" test-job.yaml
+
+          # Генерируем короткий SHA (8 символов) для имени Job
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+          sed -i "s|{{ .CommitSHA | trunc 8 }}|${SHORT_SHA}|g" test-job.yaml
+
+          # Коммитим и пушим изменения
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add *.yaml
+          git commit -m "🔄 Update images to ${{ github.sha }}" || echo "No changes to commit"
+          git push

@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: laboratory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: laboratory
+  template:
+    metadata:
+      labels:
+        app: laboratory
+    spec:
+      containers:
+        - name: laboratory
+          image: ghcr.io/NebovarenkovStepan/Methods_of_programming_CENN_TKI_341/laboratory:latest
+          env:
+            - name: DATABASE_URL
+              value: postgresql://hospital:hospital_password@postgres:5432/hospital_db
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 15

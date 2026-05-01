@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hospital-tests-{{ .CommitSHA | trunc 8 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tests
+          image: ghcr.io/NebovarenkovStepan/Methods_of_programming_CENN_TKI_341/tests:latest   # заменится пайплайном
+          env:
+            - name: PORTAL_URL
+              value: http://portal:8080
+            - name: PHARMACY_URL
+              value: http://pharmacy:8081
+            - name: LAB_URL
+              value: http://laboratory:8000
+            - name: LLM_URL
+              value: http://llm:8000
+            - name: DATABASE_URL
+              value: postgresql://hospital:hospital_password@postgres:5432/hospital_db
+          command: ["pytest"]
+          args: ["/app/test/test_system_scenarios.py", "-v", "--tb=short"]
