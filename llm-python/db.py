@@ -33,3 +33,13 @@ def fetch_one(cursor) -> dict | None:
         return row
     columns = [desc[0] for desc in cursor.description]
     return dict(zip(columns, row))
+
+
+def fetch_all(cursor) -> list[dict]:
+    rows = cursor.fetchall()
+    if not rows:
+        return []
+    if isinstance(rows[0], dict):
+        return rows
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in rows]

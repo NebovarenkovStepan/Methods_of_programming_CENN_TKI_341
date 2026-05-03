@@ -1,5 +1,3 @@
-
-
 import os
 
 import psycopg2
@@ -9,8 +7,8 @@ import requests
 
 PORTAL_URL = os.getenv("PORTAL_URL", "http://localhost:8080")
 PHARMACY_URL = os.getenv("PHARMACY_URL", "http://localhost:8081")
-LAB_URL = os.getenv("LAB_URL", "http://localhost:8082")
-LLM_URL = os.getenv("LLM_URL", "http://localhost:8083")
+LAB_URL = os.getenv("LAB_URL", "http://localhost:8001")
+LLM_URL = os.getenv("LLM_URL", "http://localhost:8002")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
@@ -23,9 +21,43 @@ def db_conn():
     conn.autocommit = False
 
     with conn.cursor() as cur:
+        cur.execute(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'appointment_status') THEN
+                    CREATE TYPE public.appointment_status AS ENUM (
+                        'SCHEDULED',
+                        'CONFIRMED',
+                        'CANCELLED',
+                        'COMPLETED'
+                    );
+                END IF;
+            END
+            $$;
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS public.appointments (
+                id BIGSERIAL PRIMARY KEY,
+                patient_id BIGINT NOT NULL REFERENCES public.patients(id) ON DELETE CASCADE,
+                employee_id BIGINT NOT NULL REFERENCES public.employees(id) ON DELETE RESTRICT,
+                scheduled_at TIMESTAMP NOT NULL,
+                reason TEXT,
+                status public.appointment_status NOT NULL DEFAULT 'CONFIRMED',
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (employee_id, scheduled_at)
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_appointments_patient_id ON public.appointments (patient_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_appointments_employee_id ON public.appointments (employee_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_appointments_scheduled_at ON public.appointments (scheduled_at)")
         cur.execute("TRUNCATE public.llm_reports CASCADE")
         cur.execute("TRUNCATE public.video_sessions CASCADE")
         cur.execute("TRUNCATE public.logs CASCADE")
+        cur.execute("TRUNCATE public.appointments CASCADE")
         cur.execute("TRUNCATE public.self_diagnostics CASCADE")
         cur.execute("TRUNCATE public.monitoring_metrics CASCADE")
         cur.execute("TRUNCATE public.medical_equipment CASCADE")
@@ -45,9 +77,7 @@ def db_conn():
         cur.execute("TRUNCATE public.medicines CASCADE")
 
     conn.commit()
-
     yield conn
-
     conn.close()
 
 
@@ -62,6 +92,15 @@ def seed_base(db_conn):
             """
         )
         doctor_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO public.employees (surname, name, patronymic, speciality)
+            VALUES ('Смирнова', 'Анна', 'Игоревна', 'Администратор ИТ')
+            RETURNING id
+            """
+        )
+        admin_id = cur.fetchone()[0]
 
         cur.execute(
             """
@@ -84,6 +123,7 @@ def seed_base(db_conn):
 
     return {
         "doctor_id": doctor_id,
+        "admin_id": admin_id,
         "medicine_id": medicine_id,
     }
 
@@ -92,117 +132,85 @@ def assert_success(response):
     assert response.status_code in (200, 201), response.text
 
 
-def test_patient_portal_medical_card_workflow(db_conn, seed_base):
-    """
-    Сценарий 1.
-    Пациент взаимодействует с порталом, после чего врач через портал создает запись ЭМК.
-
-    Проверяется связь:
-    пациент -> портал -> центральная БД -> врач -> портал -> ЭМК.
-    """
-
-    health = requests.get(f"{PORTAL_URL}/health", timeout=5)
-    assert_success(health)
-
-    patient_response = requests.post(
+def create_patient(surname="Иванов", name="Иван"):
+    response = requests.post(
         f"{PORTAL_URL}/patients",
         json={
-            "surname": "Иванов",
-            "name": "Иван",
+            "surname": surname,
+            "name": name,
             "patronymic": "Иванович",
             "date_of_birth": "2000-01-01",
         },
         timeout=5,
     )
-    assert_success(patient_response)
-    patient_id = patient_response.json()["id"]
+    assert_success(response)
+    return response.json()["id"]
 
-    card_response = requests.post(
+
+def create_card(patient_id, employee_id, complaints, notes):
+    response = requests.post(
         f"{PORTAL_URL}/cards",
         json={
             "patient_id": patient_id,
-            "employee_id": seed_base["doctor_id"],
-            "complaints": "Головная боль",
-            "notes": "Первичный прием через портал",
+            "employee_id": employee_id,
+            "complaints": complaints,
+            "notes": notes,
         },
         timeout=5,
     )
-    assert_success(card_response)
-    card_id = card_response.json()["id"]
-
-    with db_conn.cursor() as cur:
-        cur.execute("SELECT surname, name FROM public.patients WHERE id = %s", (patient_id,))
-        patient = cur.fetchone()
-
-        cur.execute(
-            """
-            SELECT patient_id, employee_id, complaints, notes
-            FROM public.cards
-            WHERE id = %s
-            """,
-            (card_id,),
-        )
-        card = cur.fetchone()
-
-    assert patient == ("Иванов", "Иван")
-    assert card[0] == patient_id
-    assert card[1] == seed_base["doctor_id"]
-    assert card[2] == "Головная боль"
-    assert card[3] == "Первичный прием через портал"
+    assert_success(response)
+    return response.json()["id"]
 
 
-def test_patient_portal_laboratory_workflow(db_conn, seed_base):
-    """
-    Сценарий 2.
-    Пациент получает результат лабораторного исследования.
-    Портал создает назначение, лаборатория регистрирует образец,
-    анализатор передает результат, ЛИС завершает исследование, LLM формирует отчет.
-
-    Проверяется связь:
-    пациент -> портал -> лаборатория -> ЛИС -> LLM -> центральная БД.
-    """
-
-    for url in (PORTAL_URL, LAB_URL, LLM_URL):
-        assert_success(requests.get(f"{url}/health", timeout=5))
-
-    patient_response = requests.post(
-        f"{PORTAL_URL}/patients",
-        json={
-            "surname": "Сидоров",
-            "name": "Алексей",
-            "patronymic": "Игоревич",
-            "date_of_birth": "1999-05-10",
-        },
-        timeout=5,
-    )
-    assert_success(patient_response)
-    patient_id = patient_response.json()["id"]
-
-    card_response = requests.post(
-        f"{PORTAL_URL}/cards",
+def create_appointment(patient_id, employee_id, scheduled_at, reason):
+    response = requests.post(
+        f"{PORTAL_URL}/appointments",
         json={
             "patient_id": patient_id,
-            "employee_id": seed_base["doctor_id"],
-            "complaints": "Слабость",
-            "notes": "Назначить общий анализ крови",
+            "employee_id": employee_id,
+            "scheduled_at": scheduled_at,
+            "reason": reason,
         },
         timeout=5,
     )
-    assert_success(card_response)
-    card_id = card_response.json()["id"]
+    assert_success(response)
+    body = response.json()
+    assert body["status"] == "CONFIRMED"
+    return body["id"]
 
-    investigation_response = requests.post(
+
+def create_investigation(patient_id, card_id, test_name):
+    response = requests.post(
         f"{PORTAL_URL}/investigations",
         json={
             "patient_id": patient_id,
             "card_id": card_id,
-            "test_name": "Общий анализ крови",
+            "test_name": test_name,
         },
         timeout=5,
     )
-    assert_success(investigation_response)
-    investigation_id = investigation_response.json()["id"]
+    assert_success(response)
+    return response.json()["id"]
 
+
+def create_prescription(patient_id, employee_id, card_id, medicine_id):
+    response = requests.post(
+        f"{PORTAL_URL}/prescriptions",
+        json={
+            "patient_id": patient_id,
+            "employee_id": employee_id,
+            "card_id": card_id,
+            "medicine_id": medicine_id,
+            "medicine_name": "Парацетамол",
+            "dosage_instructions": "По 1 таблетке 2 раза в день после еды",
+        },
+        timeout=5,
+    )
+    assert_success(response)
+    return response.json()["id"]
+
+
+def complete_lab_analysis(investigation_id, results):
     sample_response = requests.post(
         f"{LAB_URL}/samples/register",
         json={
@@ -213,6 +221,12 @@ def test_patient_portal_laboratory_workflow(db_conn, seed_base):
         timeout=5,
     )
     assert_success(sample_response)
+
+    storage_response = requests.post(f"{LAB_URL}/samples/{investigation_id}/to-storage", timeout=5)
+    assert_success(storage_response)
+
+    analysis_response = requests.post(f"{LAB_URL}/samples/{investigation_id}/to-analysis", timeout=5)
+    assert_success(analysis_response)
 
     analyzer_response = requests.post(
         f"{LAB_URL}/analyzers",
@@ -236,7 +250,7 @@ def test_patient_portal_laboratory_workflow(db_conn, seed_base):
             "investigation_id": investigation_id,
             "analyzer_id": analyzer_id,
             "workstation_id": workstation_id,
-            "raw_result": "Hemoglobin=135; Leukocytes=6.2",
+            "raw_result": results,
         },
         timeout=5,
     )
@@ -244,106 +258,224 @@ def test_patient_portal_laboratory_workflow(db_conn, seed_base):
 
     complete_response = requests.post(
         f"{LAB_URL}/investigations/complete",
-        json={
-            "investigation_id": investigation_id,
-            "results": "Hemoglobin=135; Leukocytes=6.2",
-        },
+        json={"investigation_id": investigation_id, "results": results},
         timeout=5,
     )
     assert_success(complete_response)
 
-    llm_response = requests.post(
+
+def test_patient_views_medical_card_results_and_prescriptions(db_conn, seed_base):
+    """
+    Сценарий пациента.
+    Пациент получает запись ЭМК, лабораторный результат, LLM-отчет и рецепт.
+    Тест проверяет, что данные из портала, лаборатории, LLM и аптеки сходятся
+    в общей медицинской карте пациента.
+    """
+
+    for url in (PORTAL_URL, LAB_URL, LLM_URL, PHARMACY_URL):
+        assert_success(requests.get(f"{url}/health", timeout=5))
+
+    patient_id = create_patient()
+    appointment_id = create_appointment(
+        patient_id,
+        seed_base["doctor_id"],
+        "2026-05-05T09:30:00Z",
+        "Первичная консультация терапевта",
+    )
+    card_id = create_card(
+        patient_id,
+        seed_base["doctor_id"],
+        "Слабость и температура",
+        "Назначены анализ крови и жаропонижающий препарат",
+    )
+    investigation_id = create_investigation(patient_id, card_id, "Общий анализ крови")
+    prescription_id = create_prescription(
+        patient_id,
+        seed_base["doctor_id"],
+        card_id,
+        seed_base["medicine_id"],
+    )
+
+    lab_results = "Hemoglobin=135; Leukocytes=6.2"
+    complete_lab_analysis(investigation_id, lab_results)
+
+    report_response = requests.post(
         f"{LLM_URL}/generate",
         json={"investigation_id": investigation_id},
         timeout=5,
     )
-    assert_success(llm_response)
+    assert_success(report_response)
+
+    prescription_response = requests.get(f"{PHARMACY_URL}/prescriptions/{prescription_id}", timeout=5)
+    assert_success(prescription_response)
 
     with db_conn.cursor() as cur:
         cur.execute(
             """
-            SELECT status, results
-            FROM public.laboratory_investigations
-            WHERE id = %s
+            SELECT p.surname, p.name, c.complaints, c.notes, li.test_name,
+                   li.status, li.results, pr.medicine_name, pr.dosage_instructions,
+                   lr.report_text, a.status, a.reason
+            FROM public.patients p
+            JOIN public.appointments a ON a.patient_id = p.id
+            JOIN public.cards c ON c.patient_id = p.id
+            JOIN public.laboratory_investigations li ON li.card_id = c.id
+            JOIN public.prescriptions pr ON pr.card_id = c.id
+            JOIN public.llm_reports lr ON lr.investigation_id = li.id
+            WHERE p.id = %s AND a.id = %s
             """,
-            (investigation_id,),
+            (patient_id, appointment_id),
         )
-        investigation = cur.fetchone()
+        medical_card_view = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*) FROM public.samples WHERE investigation_id = %s", (investigation_id,))
-        samples_count = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM public.analyzer_results WHERE investigation_id = %s", (investigation_id,))
-        analyzer_results_count = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM public.llm_reports WHERE investigation_id = %s", (investigation_id,))
-        reports_count = cur.fetchone()[0]
-
-    assert investigation[0] == "COMPLETED"
-    assert investigation[1] == "Hemoglobin=135; Leukocytes=6.2"
-    assert samples_count == 1
-    assert analyzer_results_count == 1
-    assert reports_count == 1
+    assert medical_card_view is not None
+    assert medical_card_view[0:2] == ("Иванов", "Иван")
+    assert medical_card_view[2] == "Слабость и температура"
+    assert medical_card_view[4] == "Общий анализ крови"
+    assert medical_card_view[5] == "COMPLETED"
+    assert medical_card_view[6] == lab_results
+    assert medical_card_view[7] == "Парацетамол"
+    assert "после еды" in medical_card_view[8]
+    assert "Hemoglobin" in medical_card_view[9]
+    assert medical_card_view[10] == "CONFIRMED"
+    assert medical_card_view[11] == "Первичная консультация терапевта"
 
 
-def test_patient_portal_pharmacy_workflow(db_conn, seed_base):
+def test_doctor_creates_orders_and_receives_lab_report(db_conn, seed_base):
     """
-    Сценарий 3.
-    Пациент получает лекарство по электронному рецепту.
-    Портал создает рецепт, аптека получает рецепт,
-    QR-сканер фиксирует рецепт и препарат, затем склад списывает лекарство.
-
-    Проверяется связь:
-    пациент -> портал -> аптека -> АИС -> QR-сканер -> склад лекарств.
+    Сценарий врача.
+    Врач открывает ЭМК пациента, добавляет запись, назначает анализ и лекарство.
+    Лаборатория выполняет анализ, LLM формирует отчет, аптека получает рецепт.
     """
 
-    for url in (PORTAL_URL, PHARMACY_URL):
+    for url in (PORTAL_URL, LAB_URL, LLM_URL, PHARMACY_URL):
         assert_success(requests.get(f"{url}/health", timeout=5))
 
-    patient_response = requests.post(
-        f"{PORTAL_URL}/patients",
+    patient_id = create_patient("Сидоров", "Алексей")
+    card_id = create_card(
+        patient_id,
+        seed_base["doctor_id"],
+        "Головокружение",
+        "Врач назначил анализ крови и медикаментозную терапию",
+    )
+    investigation_id = create_investigation(patient_id, card_id, "Биохимический анализ крови")
+    prescription_id = create_prescription(
+        patient_id,
+        seed_base["doctor_id"],
+        card_id,
+        seed_base["medicine_id"],
+    )
+
+    ordered_response = requests.get(f"{LAB_URL}/investigations/ordered", timeout=5)
+    assert_success(ordered_response)
+    ordered_ids = {item["id"] for item in ordered_response.json()}
+    assert investigation_id in ordered_ids
+
+    doctor_lab_response = requests.get(f"{LAB_URL}/investigations/{investigation_id}", timeout=5)
+    assert_success(doctor_lab_response)
+    assert doctor_lab_response.json()["status"] == "ORDERED"
+
+    lab_results = "Glucose=5.1; ALT=22; AST=20"
+    complete_lab_analysis(investigation_id, lab_results)
+
+    report_response = requests.post(
+        f"{LLM_URL}/generate",
+        json={"investigation_id": investigation_id},
+        timeout=5,
+    )
+    assert_success(report_response)
+
+    reports_response = requests.get(f"{LLM_URL}/reports/{investigation_id}", timeout=5)
+    assert_success(reports_response)
+    assert len(reports_response.json()) == 1
+
+    pharmacy_response = requests.get(f"{PHARMACY_URL}/prescriptions/{prescription_id}", timeout=5)
+    assert_success(pharmacy_response)
+    assert pharmacy_response.json()["status"] == "CREATED"
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.employee_id, li.status, li.results, pr.employee_id,
+                   COUNT(ar.id), COUNT(lr.id)
+            FROM public.cards c
+            JOIN public.laboratory_investigations li ON li.card_id = c.id
+            JOIN public.prescriptions pr ON pr.card_id = c.id
+            LEFT JOIN public.analyzer_results ar ON ar.investigation_id = li.id
+            LEFT JOIN public.llm_reports lr ON lr.investigation_id = li.id
+            WHERE c.id = %s
+            GROUP BY c.employee_id, li.status, li.results, pr.employee_id
+            """,
+            (card_id,),
+        )
+        doctor_workflow = cur.fetchone()
+
+    assert doctor_workflow[0] == seed_base["doctor_id"]
+    assert doctor_workflow[1] == "COMPLETED"
+    assert doctor_workflow[2] == lab_results
+    assert doctor_workflow[3] == seed_base["doctor_id"]
+    assert doctor_workflow[4] == 1
+    assert doctor_workflow[5] == 1
+
+
+def test_admin_monitors_services_equipment_and_stock(db_conn, seed_base):
+    """
+    Сценарий администратора / ИТ.
+    Администратор проверяет доступность сервисов, мониторинг оборудования,
+    самодиагностику и изменение аптечного склада после выдачи лекарства.
+    """
+
+    for url in (PORTAL_URL, LAB_URL, LLM_URL, PHARMACY_URL):
+        health = requests.get(f"{url}/health", timeout=5)
+        assert_success(health)
+        assert health.json()["status"] == "ok"
+
+    equipment_response = requests.post(
+        f"{LAB_URL}/equipment",
         json={
-            "surname": "Кузнецов",
-            "name": "Максим",
-            "patronymic": "Олегович",
-            "date_of_birth": "1998-03-15",
+            "name": "Analyzer Rack A",
+            "equipment_type": "analyzer",
+            "location": "Laboratory room 2",
         },
         timeout=5,
     )
-    assert_success(patient_response)
-    patient_id = patient_response.json()["id"]
+    assert_success(equipment_response)
+    equipment_id = equipment_response.json()["id"]
 
-    card_response = requests.post(
-        f"{PORTAL_URL}/cards",
+    metric_response = requests.post(
+        f"{LAB_URL}/monitoring/metrics",
         json={
-            "patient_id": patient_id,
-            "employee_id": seed_base["doctor_id"],
-            "complaints": "Температура",
-            "notes": "Назначить препарат",
+            "equipment_id": equipment_id,
+            "metric_name": "temperature",
+            "metric_value": "36.6",
         },
         timeout=5,
     )
-    assert_success(card_response)
-    card_id = card_response.json()["id"]
+    assert_success(metric_response)
 
-    prescription_response = requests.post(
-        f"{PORTAL_URL}/prescriptions",
+    diagnostic_response = requests.post(
+        f"{LAB_URL}/diagnostics",
         json={
-            "patient_id": patient_id,
-            "employee_id": seed_base["doctor_id"],
-            "card_id": card_id,
-            "medicine_id": seed_base["medicine_id"],
-            "medicine_name": "Парацетамол",
-            "dosage_instructions": "По 1 таблетке 2 раза в день",
+            "equipment_id": equipment_id,
+            "diagnostic_status": "OK",
+            "details": "Плановая самодиагностика завершена без ошибок",
         },
         timeout=5,
     )
-    assert_success(prescription_response)
-    prescription_id = prescription_response.json()["id"]
+    assert_success(diagnostic_response)
 
-    get_prescription_response = requests.get(f"{PHARMACY_URL}/prescriptions/{prescription_id}", timeout=5)
-    assert_success(get_prescription_response)
-    assert get_prescription_response.json()["id"] == prescription_id
+    patient_id = create_patient("Кузнецов", "Максим")
+    card_id = create_card(
+        patient_id,
+        seed_base["doctor_id"],
+        "Температура",
+        "Назначен препарат, администратор контролирует склад",
+    )
+    prescription_id = create_prescription(
+        patient_id,
+        seed_base["doctor_id"],
+        card_id,
+        seed_base["medicine_id"],
+    )
 
     scan_prescription_response = requests.post(
         f"{PHARMACY_URL}/scanner/prescription",
@@ -361,29 +493,44 @@ def test_patient_portal_pharmacy_workflow(db_conn, seed_base):
 
     dispense_response = requests.post(
         f"{PHARMACY_URL}/dispense",
-        json={"prescription_id": prescription_id, "quantity": 1},
+        json={"prescription_id": prescription_id, "quantity": 2},
         timeout=5,
     )
     assert_success(dispense_response)
 
     with db_conn.cursor() as cur:
-        cur.execute("SELECT status FROM public.prescriptions WHERE id = %s", (prescription_id,))
-        prescription_status = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT me.status, mm.metric_name, mm.metric_value,
+                   sd.diagnostic_status, sd.details
+            FROM public.medical_equipment me
+            JOIN public.monitoring_metrics mm ON mm.equipment_id = me.id
+            JOIN public.self_diagnostics sd ON sd.equipment_id = me.id
+            WHERE me.id = %s
+            """,
+            (equipment_id,),
+        )
+        equipment_state = cur.fetchone()
 
-        cur.execute("SELECT quantity FROM public.warehouse_stock WHERE medicine_id = %s", (seed_base["medicine_id"],))
-        stock_quantity = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT pr.status, ws.quantity, COUNT(DISTINCT se.id), COUNT(DISTINCT de.id)
+            FROM public.prescriptions pr
+            JOIN public.warehouse_stock ws ON ws.medicine_id = pr.medicine_id
+            LEFT JOIN public.scanner_events se
+                ON se.prescription_id = pr.id OR se.medicine_id = pr.medicine_id
+            LEFT JOIN public.dispense_events de ON de.prescription_id = pr.id
+            WHERE pr.id = %s
+            GROUP BY pr.status, ws.quantity
+            """,
+            (prescription_id,),
+        )
+        stock_state = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*) FROM public.scanner_events WHERE prescription_id = %s", (prescription_id,))
-        prescription_scan_count = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM public.scanner_events WHERE medicine_id = %s", (seed_base["medicine_id"],))
-        medicine_scan_count = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM public.dispense_events WHERE prescription_id = %s", (prescription_id,))
-        dispense_count = cur.fetchone()[0]
-
-    assert prescription_status == "DISPENSED"
-    assert stock_quantity == 9
-    assert prescription_scan_count == 1
-    assert medicine_scan_count == 1
-    assert dispense_count == 1
+    assert equipment_state[0] == "ACTIVE"
+    assert equipment_state[1:4] == ("temperature", "36.6", "OK")
+    assert "без ошибок" in equipment_state[4]
+    assert stock_state[0] == "DISPENSED"
+    assert stock_state[1] == 8
+    assert stock_state[2] == 2
+    assert stock_state[3] == 1

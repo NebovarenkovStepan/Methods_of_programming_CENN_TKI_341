@@ -3,6 +3,7 @@ BEGIN;
 DROP TABLE IF EXISTS public.llm_reports CASCADE;
 DROP TABLE IF EXISTS public.video_sessions CASCADE;
 DROP TABLE IF EXISTS public.logs CASCADE;
+DROP TABLE IF EXISTS public.appointments CASCADE;
 DROP TABLE IF EXISTS public.self_diagnostics CASCADE;
 DROP TABLE IF EXISTS public.monitoring_metrics CASCADE;
 DROP TABLE IF EXISTS public.medical_equipment CASCADE;
@@ -24,6 +25,7 @@ DROP TABLE IF EXISTS public.patients CASCADE;
 
 DROP TYPE IF EXISTS public.log_level CASCADE;
 DROP TYPE IF EXISTS public.video_session_status CASCADE;
+DROP TYPE IF EXISTS public.appointment_status CASCADE;
 DROP TYPE IF EXISTS public.scanner_event_type CASCADE;
 DROP TYPE IF EXISTS public.sample_status CASCADE;
 DROP TYPE IF EXISTS public.equipment_status CASCADE;
@@ -36,6 +38,7 @@ CREATE TYPE public.equipment_status AS ENUM ('ACTIVE', 'INACTIVE', 'ERROR', 'MAI
 CREATE TYPE public.sample_status AS ENUM ('REGISTERED', 'IN_STORAGE', 'IN_ANALYSIS', 'COMPLETED', 'ARCHIVED');
 CREATE TYPE public.scanner_event_type AS ENUM ('PRESCRIPTION_SCAN', 'MEDICINE_SCAN');
 CREATE TYPE public.video_session_status AS ENUM ('CREATED', 'STARTED', 'ENDED', 'CANCELLED');
+CREATE TYPE public.appointment_status AS ENUM ('SCHEDULED', 'CONFIRMED', 'CANCELLED', 'COMPLETED');
 CREATE TYPE public.log_level AS ENUM ('INFO', 'WARNING', 'ERROR');
 
 CREATE TABLE public.patients (
@@ -75,6 +78,17 @@ CREATE TABLE public.cards (
     date_of_visit TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     complaints TEXT,
     notes TEXT
+);
+
+CREATE TABLE public.appointments (
+    id BIGSERIAL PRIMARY KEY,
+    patient_id BIGINT NOT NULL REFERENCES public.patients(id) ON DELETE CASCADE,
+    employee_id BIGINT NOT NULL REFERENCES public.employees(id) ON DELETE RESTRICT,
+    scheduled_at TIMESTAMP NOT NULL,
+    reason TEXT,
+    status public.appointment_status NOT NULL DEFAULT 'CONFIRMED',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (employee_id, scheduled_at)
 );
 
 CREATE TABLE public.medicines (
@@ -229,6 +243,10 @@ CREATE TABLE public.llm_reports (
 
 CREATE INDEX idx_cards_patient_id ON public.cards (patient_id);
 CREATE INDEX idx_cards_employee_id ON public.cards (employee_id);
+
+CREATE INDEX idx_appointments_patient_id ON public.appointments (patient_id);
+CREATE INDEX idx_appointments_employee_id ON public.appointments (employee_id);
+CREATE INDEX idx_appointments_scheduled_at ON public.appointments (scheduled_at);
 
 CREATE INDEX idx_lab_patient_id ON public.laboratory_investigations (patient_id);
 CREATE INDEX idx_lab_card_id ON public.laboratory_investigations (card_id);

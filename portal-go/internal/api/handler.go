@@ -14,6 +14,7 @@ import (
 type Repository interface {
 	CreatePatient(ctx context.Context, p models.Patient) (models.Patient, error)
 	CreateCard(ctx context.Context, c models.Card) (models.Card, error)
+	CreateAppointment(ctx context.Context, a models.Appointment) (models.Appointment, error)
 	CreateInvestigation(ctx context.Context, inv models.LaboratoryInvestigation) (models.LaboratoryInvestigation, error)
 	CreatePrescription(ctx context.Context, p models.Prescription) (models.Prescription, error)
 }
@@ -33,6 +34,7 @@ func (h *Handler) Router() http.Handler {
 
 	r.Post("/patients", h.CreatePatient)
 	r.Post("/cards", h.CreateCard)
+	r.Post("/appointments", h.CreateAppointment)
 	r.Post("/investigations", h.CreateInvestigation)
 	r.Post("/prescriptions", h.CreatePrescription)
 
@@ -113,6 +115,42 @@ func (h *Handler) CreateCard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, card)
+}
+
+func (h *Handler) CreateAppointment(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PatientID   int64   `json:"patient_id"`
+		EmployeeID  int64   `json:"employee_id"`
+		ScheduledAt string  `json:"scheduled_at"`
+		Reason      *string `json:"reason"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	scheduledAt, err := time.Parse(time.RFC3339, req.ScheduledAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid scheduled_at format, expected RFC3339")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	appointment, err := h.repo.CreateAppointment(ctx, models.Appointment{
+		PatientID:   req.PatientID,
+		EmployeeID:  req.EmployeeID,
+		ScheduledAt: scheduledAt,
+		Reason:      req.Reason,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, appointment)
 }
 
 func (h *Handler) CreateInvestigation(w http.ResponseWriter, r *http.Request) {
