@@ -1,4 +1,3 @@
-
 package api
 
 import (
@@ -18,6 +17,7 @@ import (
 type mockPortalRepository struct {
 	patients       []models.Patient
 	cards          []models.Card
+	appointments   []models.Appointment
 	investigations []models.LaboratoryInvestigation
 	prescriptions  []models.Prescription
 	err            error
@@ -40,6 +40,17 @@ func (m *mockPortalRepository) CreateCard(_ context.Context, c models.Card) (mod
 	c.DateOfVisit = time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
 	m.cards = append(m.cards, c)
 	return c, nil
+}
+
+func (m *mockPortalRepository) CreateAppointment(_ context.Context, a models.Appointment) (models.Appointment, error) {
+	if m.err != nil {
+		return models.Appointment{}, m.err
+	}
+	a.ID = int64(len(m.appointments) + 1)
+	a.Status = "CONFIRMED"
+	a.CreatedAt = time.Date(2026, 4, 25, 9, 0, 0, 0, time.UTC)
+	m.appointments = append(m.appointments, a)
+	return a, nil
 }
 
 func (m *mockPortalRepository) CreateInvestigation(_ context.Context, inv models.LaboratoryInvestigation) (models.LaboratoryInvestigation, error) {
@@ -156,6 +167,53 @@ func TestCreateCard_AllowsMedicalRecordWriteWithoutDoctorAuthorization(t *testin
 	}
 	if repo.cards[0].Complaints == nil || *repo.cards[0].Complaints != "Поддельная жалоба" {
 		t.Fatalf("expected complaints to be stored, got %#v", repo.cards[0].Complaints)
+	}
+}
+
+func TestCreateAppointment_ConfirmsPatientVisit(t *testing.T) {
+	repo := &mockPortalRepository{}
+	handler := NewHandler(repo).Router()
+
+	res := performRequest(handler, http.MethodPost, "/appointments", `{
+		"patient_id":1,
+		"employee_id":2,
+		"scheduled_at":"2026-05-05T09:30:00Z",
+		"reason":"Первичная консультация"
+	}`)
+
+	if res.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, res.Code, res.Body.String())
+	}
+	if len(repo.appointments) != 1 {
+		t.Fatalf("expected 1 created appointment, got %d", len(repo.appointments))
+	}
+	if repo.appointments[0].PatientID != 1 || repo.appointments[0].EmployeeID != 2 {
+		t.Fatalf("unexpected appointment participants: %#v", repo.appointments[0])
+	}
+	if repo.appointments[0].Status != "CONFIRMED" {
+		t.Fatalf("expected status CONFIRMED, got %s", repo.appointments[0].Status)
+	}
+	if repo.appointments[0].Reason == nil || *repo.appointments[0].Reason != "Первичная консультация" {
+		t.Fatalf("unexpected appointment reason: %#v", repo.appointments[0].Reason)
+	}
+}
+
+func TestCreateAppointment_InvalidDateReturnsBadRequest(t *testing.T) {
+	repo := &mockPortalRepository{}
+	handler := NewHandler(repo).Router()
+
+	res := performRequest(handler, http.MethodPost, "/appointments", `{
+		"patient_id":1,
+		"employee_id":2,
+		"scheduled_at":"05.05.2026 09:30",
+		"reason":"Первичная консультация"
+	}`)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, res.Code, res.Body.String())
+	}
+	if len(repo.appointments) != 0 {
+		t.Fatalf("expected no created appointments, got %d", len(repo.appointments))
 	}
 }
 

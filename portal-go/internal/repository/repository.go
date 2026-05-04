@@ -51,6 +51,31 @@ func (r *Repository) CreateCard(ctx context.Context, c models.Card) (models.Card
 	return result, nil
 }
 
+func (r *Repository) CreateAppointment(ctx context.Context, a models.Appointment) (models.Appointment, error) {
+	query := `
+		INSERT INTO public.appointments (patient_id, employee_id, scheduled_at, reason)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, patient_id, employee_id, scheduled_at, reason, status, created_at
+	`
+
+	var result models.Appointment
+	err := r.pool.QueryRow(ctx, query, a.PatientID, a.EmployeeID, a.ScheduledAt, a.Reason).
+		Scan(
+			&result.ID,
+			&result.PatientID,
+			&result.EmployeeID,
+			&result.ScheduledAt,
+			&result.Reason,
+			&result.Status,
+			&result.CreatedAt,
+		)
+	if err != nil {
+		return models.Appointment{}, fmt.Errorf("create appointment: %w", err)
+	}
+
+	return result, nil
+}
+
 func (r *Repository) CreateInvestigation(ctx context.Context, inv models.LaboratoryInvestigation) (models.LaboratoryInvestigation, error) {
 	query := `
 		INSERT INTO public.laboratory_investigations (patient_id, card_id, test_name)

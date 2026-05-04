@@ -11,11 +11,11 @@ type Patient struct {
 }
 
 type Employee struct {
-	ID          int64   `json:"id"`
-	Surname     string  `json:"surname"`
-	Name        string  `json:"name"`
-	Patronymic  *string `json:"patronymic,omitempty"`
-	Speciality  string  `json:"speciality"`
+	ID         int64   `json:"id"`
+	Surname    string  `json:"surname"`
+	Name       string  `json:"name"`
+	Patronymic *string `json:"patronymic,omitempty"`
+	Speciality string  `json:"speciality"`
 }
 
 type Card struct {
@@ -25,6 +25,16 @@ type Card struct {
 	DateOfVisit time.Time `json:"date_of_visit"`
 	Complaints  *string   `json:"complaints,omitempty"`
 	Notes       *string   `json:"notes,omitempty"`
+}
+
+type Appointment struct {
+	ID          int64     `json:"id"`
+	PatientID   int64     `json:"patient_id"`
+	EmployeeID  int64     `json:"employee_id"`
+	ScheduledAt time.Time `json:"scheduled_at"`
+	Reason      *string   `json:"reason,omitempty"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type LaboratoryInvestigation struct {

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from db import get_connection
+from db import fetch_all, get_connection
 from service.llm_service import LLMService
 
 app = FastAPI(title="llm-python")
@@ -40,6 +40,4 @@ def get_reports(investigation_id: int):
                 """,
                 (investigation_id,),
             )
-            rows = cur.fetchall()
-
-            return [dict(r) for r in rows]
+            return fetch_all(cur)
