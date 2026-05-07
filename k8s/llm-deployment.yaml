@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: llm
-          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/llm:f9d6c1591e5e509c588bda5b41f03eceb0567837
+          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/llm:40379b190fd4bd109e04452689a1e59d1832bee3
           env:
             - name: DATABASE_URL
               value: postgresql://hospital:hospital_password@postgres:5432/hospital_db
