@@ -104,7 +104,7 @@ func TestHealth_ReturnsOK(t *testing.T) {
 	}
 }
 
-func TestGetPrescription_ReturnsExistingPrescription(t *testing.T) {
+func TestHC30GetPrescription_ReturnsPrescriptionWithoutCallerAuthorization(t *testing.T) {
 	repo := newMockPharmacyRepository()
 	repo.prescriptions[1] = models.Prescription{
 		ID:           1,
@@ -142,7 +142,7 @@ func TestGetPrescription_NotFound(t *testing.T) {
 	}
 }
 
-func TestScanPrescription_AcceptsFakeQRWithoutAuthenticityValidation(t *testing.T) {
+func TestHC29ScanPrescription_AcceptsFakeQRWithoutAuthenticityValidation(t *testing.T) {
 	repo := newMockPharmacyRepository()
 	handler := newTestHandler(repo)
 

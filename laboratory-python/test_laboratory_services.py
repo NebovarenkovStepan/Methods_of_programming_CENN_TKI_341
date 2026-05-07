@@ -51,10 +51,9 @@ class TestLISService:
             assert result == expected_investigations
             self.mock_cursor.execute.assert_called_once()
     
-    # NEGATIVE: HC-2 - Unauthorized user should not access data
-    # This test demonstrates vulnerability - no authorization check
-    def test_get_ordered_investigations_unauthorized_user(self):
-        """Test vulnerability: unauthorized user can access investigations (no auth check)"""
+    # NEGATIVE: HC-13 - Unauthorized user reads another patient's investigation list
+    def test_hc13_get_ordered_investigations_unauthorized_user(self):
+        """Test vulnerability: investigation list is readable without caller authorization."""
         self.mock_cursor.fetchall.return_value = [
             (1, 1, 1, 'Blood Test', 'ORDERED', None, '2026-04-25', None)
         ]
@@ -86,9 +85,9 @@ class TestLISService:
             assert result == expected
             self.mock_cursor.execute.assert_called_once()
     
-    # NEGATIVE: HC-3 - Unauthorized access to investigation data
-    def test_get_investigation_by_id_unauthorized_doctor(self):
-        """Test vulnerability: any doctor can access any patient investigation (no access control)"""
+    # NEGATIVE: HC-13 - Unauthorized user reads investigation by foreign ID
+    def test_hc13_get_investigation_by_id_unauthorized_user(self):
+        """Test vulnerability: any caller can access any patient investigation."""
         investigation_id = 1
         patient_id = 999  # Different patient
         
@@ -121,9 +120,9 @@ class TestLISService:
             assert result['status'] == 'COMPLETED'
             assert result['results'] == results
     
-    # NEGATIVE: HC-4 - Unauthorized user can write EMK data
-    def test_complete_investigation_unauthorized_user(self):
-        """Test vulnerability: non-doctor can complete investigation (no role check)"""
+    # NEGATIVE: HC-15 - Unauthorized lab submits final analysis results
+    def test_hc15_complete_investigation_unauthorized_lab(self):
+        """Test vulnerability: unauthorized caller can complete an investigation."""
         investigation_id = 1
         fake_results = "INJECTED MALICIOUS DATA"
         
@@ -172,9 +171,9 @@ class TestSampleStorageService:
             )
             assert result['status'] == 'REGISTERED'
     
-    # NEGATIVE: HC-6 - Unauthorized lab can register samples
-    def test_register_sample_unauthorized_lab(self):
-        """Test vulnerability: unauthorized entity can register samples (no lab verification)"""
+    # NEGATIVE: HC-15 - Unauthorized lab registers a patient sample
+    def test_hc15_register_sample_unauthorized_lab(self):
+        """Test vulnerability: unauthorized entity can register samples."""
         investigation_id = 1
         sample_type = "blood"
         # VULNERABLE: No check if requester is authorized laboratory
@@ -206,9 +205,9 @@ class TestSampleStorageService:
             )
             assert result['status'] == 'IN_STORAGE'
     
-    # NEGATIVE: HC-6 - Unauthorized user can move samples
-    def test_move_sample_to_storage_unauthorized_user(self):
-        """Test vulnerability: non-lab user can move samples (no access control)"""
+    # NEGATIVE: HC-15 - Unauthorized lab moves a sample to storage
+    def test_hc15_move_sample_to_storage_unauthorized_lab(self):
+        """Test vulnerability: non-lab caller can move samples."""
         investigation_id = 1
         
         with patch('sample_storage.service.fetch_one') as mock_fetch:
@@ -238,9 +237,9 @@ class TestSampleStorageService:
             )
             assert result['status'] == 'IN_ANALYSIS'
     
-    # NEGATIVE: HC-6 - Unauthorized user can transition samples
-    def test_move_sample_to_analysis_unauthorized_user(self):
-        """Test vulnerability: invalid user can transition samples (no auth)"""
+    # NEGATIVE: HC-15 - Unauthorized lab moves a sample to analysis
+    def test_hc15_move_sample_to_analysis_unauthorized_lab(self):
+        """Test vulnerability: unauthorized caller can transition samples to analysis."""
         investigation_id = 1
         
         with patch('sample_storage.service.fetch_one') as mock_fetch:
@@ -284,7 +283,7 @@ class TestAnalyzerService:
             )
             assert result['status'] == 'ACTIVE'
     
-    # NEGATIVE: HC-3 - Unauthorized user can create analyzers
+    # NEGATIVE: Supporting lab administration endpoint lacks authorization
     def test_create_analyzer_unauthorized_user(self):
         """Test vulnerability: non-lab user can create analyzers (no auth check)"""
         name = "Fake-Analyzer"
@@ -319,9 +318,9 @@ class TestAnalyzerService:
             )
             assert result['raw_result'] == raw_result
     
-    # NEGATIVE: HC-2 - Unauthorized lab can save false results
-    def test_save_analyzer_result_unauthorized_lab(self):
-        """Test vulnerability: fake lab can inject false results (no authentication)"""
+    # NEGATIVE: HC-10 - Tampered lab result is accepted by the lab workflow
+    def test_hc10_tampered_analyzer_result_is_accepted(self):
+        """Test vulnerability: fake lab can inject false analysis results."""
         investigation_id = 1
         false_result = "INJECTED: Normal - No disease detected"
         
@@ -373,7 +372,7 @@ class TestWorkstationService:
             )
             assert result['status'] == 'ACTIVE'
     
-    # NEGATIVE: HC-3 - Unauthorized user can create workstations
+    # NEGATIVE: Supporting lab administration endpoint lacks authorization
     def test_create_workstation_unauthorized_user(self):
         """Test vulnerability: non-lab user can create workstations"""
         name = "Fake-Workstation"
@@ -419,7 +418,7 @@ class TestMedicalEquipmentService:
             )
             assert result['status'] == 'ACTIVE'
     
-    # NEGATIVE: HC-3 - Unauthorized user can create equipment
+    # NEGATIVE: Supporting lab administration endpoint lacks authorization
     def test_create_equipment_unauthorized_user(self):
         """Test vulnerability: patient can create medical equipment"""
         name = "Fake-Equipment"
@@ -469,7 +468,7 @@ class TestMonitoringService:
             )
             assert result['metric_name'] == metric_name
     
-    # NEGATIVE: HC-8 - Unauthorized system can inject false metrics
+    # NEGATIVE: Monitoring data source is not verified
     def test_add_metric_unauthorized_system(self):
         """Test vulnerability: attacker can inject false metrics (no source verification)"""
         equipment_id = 1
@@ -525,7 +524,7 @@ class TestSelfDiagnosticsService:
             )
             assert result['diagnostic_status'] == diagnostic_status
     
-    # NEGATIVE: HC-8 - Unauthorized device can fake diagnostics
+    # NEGATIVE: Diagnostic data source is not verified
     def test_add_diagnostic_unauthorized_device(self):
         """Test vulnerability: fake device can report false diagnostics (no source auth)"""
         equipment_id = 1
@@ -603,9 +602,9 @@ class TestServiceInteractions:
             )
             assert result['raw_result'] == 'Normal'
     
-    # NEGATIVE: HC-2 - Workflow allows unauthorized data transmission
-    def test_investigation_to_analysis_workflow_unauthorized(self):
-        """Test vulnerability: unauthed user can manipulate entire workflow"""
+    # NEGATIVE: HC-15 - Unauthorized lab can submit the whole analysis workflow
+    def test_hc15_investigation_to_analysis_workflow_unauthorized_lab(self):
+        """Test vulnerability: unauthenticated caller can manipulate the lab workflow."""
         investigation_id = 1
         
         with patch('lis.service.fetch_one') as mock_lis_fetch, \
@@ -631,9 +630,9 @@ class TestServiceInteractions:
             assert sample is not None
             assert result is not None
     
-    # NEGATIVE: HC-5 - Data authenticity not verified in workflow
-    def test_non_authentic_data_in_workflow(self):
-        """Test vulnerability: non-authentic results accepted in workflow (no integrity check)"""
+    # NEGATIVE: HC-10 - Tampered result reaches the completed investigation
+    def test_hc10_non_authentic_data_in_workflow(self):
+        """Test vulnerability: non-authentic results are accepted in the workflow."""
         investigation_id = 1
         fake_results = "FABRICATED RESULTS"
         
@@ -651,9 +650,9 @@ class TestServiceInteractions:
             )
             assert result['results'] == fake_results  # Fake data accepted
     
-    # NEGATIVE: HC-1 - EMK access not verified
-    def test_emk_access_bypass_in_workflow(self):
-        """Test vulnerability: EMK data accessible without proper authorization in workflow"""
+    # NEGATIVE: HC-24 - API logic allows bypassing EMK access rules
+    def test_hc24_emk_access_bypass_in_workflow(self):
+        """Test vulnerability: EMK data is accessible without proper authorization."""
         patient_id = 999
         investigation_id = 1
         

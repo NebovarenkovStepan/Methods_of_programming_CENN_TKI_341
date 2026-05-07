@@ -132,6 +132,90 @@ def assert_success(response):
     assert response.status_code in (200, 201), response.text
 
 
+def test_hc31_video_session_can_be_started_without_authorized_doctor(db_conn, seed_base):
+    """
+    НС-31.
+    Неавторизованный сотрудник без роли врача может быть записан как участник
+    начатого телемедицинского сеанса, потому модель данных не проверяет роль
+    и авторизацию врача.
+    """
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.patients (surname, name, patronymic, date_of_birth)
+            VALUES ('Орлов', 'Илья', 'Сергеевич', '1995-02-10')
+            RETURNING id
+            """
+        )
+        patient_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO public.video_sessions (
+                patient_id,
+                employee_id,
+                started_at,
+                session_status,
+                session_notes
+            )
+            VALUES (%s, %s, CURRENT_TIMESTAMP, 'STARTED', 'Сеанс создан без проверки роли врача')
+            RETURNING patient_id, employee_id, session_status, session_notes
+            """,
+            (patient_id, seed_base["admin_id"]),
+        )
+        session = cur.fetchone()
+
+    assert session[0] == patient_id
+    assert session[1] == seed_base["admin_id"]
+    assert session[2] == "STARTED"
+    assert "без проверки роли врача" in session[3]
+
+
+def test_hc20_existing_emk_record_can_be_changed_without_authorized_doctor(db_conn, seed_base):
+    """
+    НС-20.
+    Существующая запись ЭМК может быть изменена без проверки авторизованного
+    врача, потому на уровне текущей модели нет ограничения, связывающего
+    изменение с подтвержденной ролью врача.
+    """
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.patients (surname, name, patronymic, date_of_birth)
+            VALUES ('Федоров', 'Никита', 'Андреевич', '1988-07-15')
+            RETURNING id
+            """
+        )
+        patient_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO public.cards (patient_id, employee_id, complaints, notes)
+            VALUES (%s, %s, 'Кашель', 'Первичная запись врача')
+            RETURNING id
+            """,
+            (patient_id, seed_base["doctor_id"]),
+        )
+        card_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            UPDATE public.cards
+            SET complaints = 'Подмененные жалобы',
+                notes = 'Запись ЭМК изменена без проверки авторизованного врача'
+            WHERE id = %s
+            RETURNING complaints, notes
+            """,
+            (card_id,),
+        )
+        changed_card = cur.fetchone()
+
+    assert changed_card[0] == "Подмененные жалобы"
+    assert "без проверки авторизованного врача" in changed_card[1]
+
+
 def create_patient(surname="Иванов", name="Иван"):
     response = requests.post(
         f"{PORTAL_URL}/patients",
