@@ -132,9 +132,9 @@ def assert_success(response):
     assert response.status_code in (200, 201), response.text
 
 
-def test_hc31_video_session_can_be_started_without_authorized_doctor(db_conn, seed_base):
+def test_hc29_video_session_can_be_started_without_authorized_doctor(db_conn, seed_base):
     """
-    НС-31.
+    НС-29.
     Неавторизованный сотрудник без роли врача может быть записан как участник
     начатого телемедицинского сеанса, потому модель данных не проверяет роль
     и авторизацию врача.
@@ -172,9 +172,9 @@ def test_hc31_video_session_can_be_started_without_authorized_doctor(db_conn, se
     assert "без проверки роли врача" in session[3]
 
 
-def test_hc20_existing_emk_record_can_be_changed_without_authorized_doctor(db_conn, seed_base):
+def test_hc19_existing_emk_record_can_be_changed_without_authorized_doctor(db_conn, seed_base):
     """
-    НС-20.
+    НС-19.
     Существующая запись ЭМК может быть изменена без проверки авторизованного
     врача, потому на уровне текущей модели нет ограничения, связывающего
     изменение с подтвержденной ролью врача.

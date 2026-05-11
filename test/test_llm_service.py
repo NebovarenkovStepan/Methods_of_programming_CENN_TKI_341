@@ -36,8 +36,8 @@ class TestLLMService:
             result = self.llm_service.get_investigation(self.mock_conn, investigation_id)
             assert result == expected
     
-    # NEGATIVE: HC-13 - Unauthorized user can retrieve a foreign investigation
-    def test_hc13_get_investigation_unauthorized_user(self):
+    # NEGATIVE: HC-12 - Unauthorized user can retrieve a foreign investigation
+    def test_hc12_get_investigation_unauthorized_user(self):
         """Test vulnerability: unauthorized user can retrieve an investigation."""
         investigation_id = 1
         
@@ -62,8 +62,8 @@ class TestLLMService:
         assert 'пределах нормы' in result
         assert result != ""
     
-    # NEGATIVE: HC-10 - Tampered/incomplete lab data can reach report generation
-    def test_hc10_generate_report_text_incomplete_investigation(self):
+    # NEGATIVE: HC-5 - Distorted/incomplete lab data can reach report generation
+    def test_hc5_generate_report_text_incomplete_investigation(self):
         """Test vulnerability: report generation accepts incomplete investigation input."""
         incomplete_investigation = {
             'id': 1,
@@ -99,8 +99,8 @@ class TestLLMService:
             )
             assert result['report_text'] == text
     
-    # NEGATIVE: HC-10 - Tampered report text is saved without authenticity proof
-    def test_hc10_save_report_unauthorized_system(self):
+    # NEGATIVE: HC-5 - Distorted report text is saved without authenticity proof
+    def test_hc5_save_report_unauthorized_system(self):
         """Test vulnerability: fake report is accepted without authenticity verification."""
         patient_id = 1
         investigation_id = 1
@@ -144,8 +144,8 @@ class TestLLMService:
             assert report is not None
             assert 'пределах нормы' in report['report_text']
     
-    # NEGATIVE: HC-24 - Unauthorized caller can generate a report for another patient's investigation
-    def test_hc24_generate_and_save_unauthorized_user(self):
+    # NEGATIVE: HC-12 - Unauthorized caller can generate a report for another patient's investigation
+    def test_hc12_generate_and_save_unauthorized_user(self):
         """Test vulnerability: unauthorized caller can generate and save reports."""
         investigation_id = 1
         
@@ -179,8 +179,8 @@ class TestLLMService:
             assert err == "investigation not found"
             assert report is None
     
-    # NEGATIVE: HC-10 - Report authenticity cannot be verified
-    def test_hc10_report_authenticity_not_verifiable(self):
+    # NEGATIVE: HC-5 - Report authenticity cannot be verified
+    def test_hc5_report_authenticity_not_verifiable(self):
         """Test vulnerability: generated report has no authenticity proof."""
         investigation = {
             'id': 1,
@@ -204,8 +204,8 @@ class TestLLMAuthorization:
         self.llm_service = LLMService()
         self.mock_conn = Mock()
     
-    # NEGATIVE: HC-24 - No doctor role verification before report generation
-    def test_hc24_no_role_verification_for_generation(self):
+    # NEGATIVE: HC-12 - No doctor role verification before report generation
+    def test_hc12_no_role_verification_for_generation(self):
         """Test vulnerability: no role check before generating reports."""
         investigation_id = 1
         

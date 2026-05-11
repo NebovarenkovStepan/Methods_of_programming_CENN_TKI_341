@@ -145,7 +145,7 @@ func TestCreatePatient_InvalidDateReturnsBadRequest(t *testing.T) {
 	}
 }
 
-func TestHC19CreateCard_AllowsMedicalRecordWriteWithoutDoctorAuthorization(t *testing.T) {
+func TestHC18CreateCard_AllowsMedicalRecordWriteWithoutDoctorAuthorization(t *testing.T) {
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -217,7 +217,7 @@ func TestCreateAppointment_InvalidDateReturnsBadRequest(t *testing.T) {
 	}
 }
 
-func TestHC34CreateInvestigation_AllowsAnalysisOrderWithoutDoctorAuthorization(t *testing.T) {
+func TestHC32CreateInvestigation_AllowsAnalysisOrderWithoutDoctorAuthorization(t *testing.T) {
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -241,7 +241,7 @@ func TestHC34CreateInvestigation_AllowsAnalysisOrderWithoutDoctorAuthorization(t
 	}
 }
 
-func TestHC18CreatePrescription_AllowsUncheckedPrescriptionCreation(t *testing.T) {
+func TestCreatePrescription_AllowsUncheckedPrescriptionCreation(t *testing.T) {
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 	medicineID := int64(5)
