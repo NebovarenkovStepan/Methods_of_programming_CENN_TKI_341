@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: portal
-          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/portal:cd60885dfd269fc11755df4b049d86e1f5c8f0b8
+          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/portal:02944d5a77b839e73e3a94d2f7f427ef30e4ef86
           env:
             - name: DATABASE_URL
               value: "postgres://hospital:hospital_password@postgres:5432/hospital_db?sslmode=disable"
