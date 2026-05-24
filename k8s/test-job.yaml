@@ -24,3 +24,4 @@ spec:
               value: postgresql://hospital:hospital_password@postgres:5432/hospital_db
           command: ["python", "-m", "pytest"]
           args: ["/app/test/test_system_scenarios.py", "-v", "--tb=short"]
+        
