@@ -9,13 +9,21 @@ class MedicalEquipmentService:
         equipment_type: str,
         location: str | None = None,
     ) -> dict:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO public.medical_equipment (name, equipment_type, location, status)
-                VALUES (%s, %s, %s, 'ACTIVE')
-                RETURNING id, name, equipment_type, location, status
-                """,
-                (name, equipment_type, location),
-            )
-            return fetch_one(cur)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO medical_equipment (name, equipment_type, location, status)
+            VALUES (?, ?, ?, 'ACTIVE')
+            """,
+            (name, equipment_type, location),
+        )
+        equipment_id = cur.lastrowid
+        cur.execute(
+            """
+            SELECT id, name, equipment_type, location, status
+            FROM medical_equipment
+            WHERE id = ?
+            """,
+            (equipment_id,),
+        )
+        return fetch_one(cur)

@@ -1,187 +1,109 @@
 package repository
-import (
 
+import (
 	"context"
 	"errors"
 	"fmt"
 	"pharmacy-go/internal/models"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
+	"pharmacy-go/internal/security"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 var ErrNotFound = errors.New("not found")
-
 var ErrInsufficientStock = errors.New("insufficient stock")
-
 var ErrPrescriptionAlreadyDispensed = errors.New("prescription already dispensed")
-
 var ErrPrescriptionCancelled = errors.New("prescription cancelled")
-
 var ErrMedicineNotLinked = errors.New("prescription has no medicine_id")
 
+type userRecord struct {
+	patientID  *int64
+	speciality *string
+}
+
 type Repository struct {
+	mu sync.Mutex
 
-	pool *pgxpool.Pool
-
+	prescriptions map[int64]models.Prescription
+	scannerEvents []models.ScannerEvent
+	dispenseEvents []models.DispenseEvent
+	stock map[int64]int
+	users map[int64]userRecord
+	logs []security.AuditEvent
 }
 
-func New(pool *pgxpool.Pool) *Repository {
-
-	return &Repository{pool: pool}
-
-}
-
-func (r *Repository) GetPrescriptionByID(ctx context.Context, id int64) (models.Prescription, error) {
-
-	query := `
-		SELECT id, patient_id, employee_id, card_id, medicine_id, medicine_name,
-		       dosage_instructions, status, date_of_receipt
-		FROM public.prescriptions
-		WHERE id = $1
-	`
-	var p models.Prescription
-	err := r.pool.QueryRow(ctx, query, id).Scan(
-		&p.ID,
-		&p.PatientID,
-		&p.EmployeeID,
-		&p.CardID,
-		&p.MedicineID,
-		&p.MedicineName,
-		&p.DosageInstructions,
-		&p.Status,
-		&p.DateOfReceipt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return models.Prescription{}, ErrNotFound
-		}
-		return models.Prescription{}, fmt.Errorf("get prescription: %w", err)
+func NewInMemory() *Repository {
+	admin := "Администратор"
+	return &Repository{
+		prescriptions: make(map[int64]models.Prescription),
+		scannerEvents: make([]models.ScannerEvent, 0),
+		dispenseEvents: make([]models.DispenseEvent, 0),
+		stock: make(map[int64]int),
+		users: map[int64]userRecord{7: {speciality: &admin}},
+		logs: make([]security.AuditEvent, 0),
 	}
+}
+
+func (r *Repository) GetPrescriptionByID(_ context.Context, id int64) (models.Prescription, error) {
+	r.mu.Lock(); defer r.mu.Unlock()
+	p, ok := r.prescriptions[id]
+	if !ok { return models.Prescription{}, ErrNotFound }
 	return p, nil
-
 }
 
-func (r *Repository) CreateScannerEvent(
-
-	ctx context.Context,
-	eventType string,
-	scannedCode string,
-	prescriptionID *int64,
-	medicineID *int64,
-
-) (models.ScannerEvent, error) {
-
-	query := `
-		INSERT INTO public.scanner_events (event_type, scanned_code, prescription_id, medicine_id)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, event_type, scanned_code, prescription_id, medicine_id, scanned_at
-	`
-	var event models.ScannerEvent
-	err := r.pool.QueryRow(ctx, query, eventType, scannedCode, prescriptionID, medicineID).
-		Scan(
-			&event.ID,
-			&event.EventType,
-			&event.ScannedCode,
-			&event.PrescriptionID,
-			&event.MedicineID,
-			&event.ScannedAt,
-		)
-	if err != nil {
-		return models.ScannerEvent{}, fmt.Errorf("create scanner event: %w", err)
-	}
-	return event, nil
-
+func (r *Repository) CreateScannerEvent(_ context.Context, eventType string, scannedCode string, prescriptionID *int64, medicineID *int64) (models.ScannerEvent, error) {
+	r.mu.Lock(); defer r.mu.Unlock()
+	e := models.ScannerEvent{ID: int64(len(r.scannerEvents)+1), EventType: eventType, ScannedCode: scannedCode, PrescriptionID: prescriptionID, MedicineID: medicineID, ScannedAt: time.Now().UTC()}
+	r.scannerEvents = append(r.scannerEvents, e)
+	return e, nil
 }
 
-func (r *Repository) DispensePrescription(
+func (r *Repository) DispensePrescription(_ context.Context, prescriptionID int64, quantity int) (models.DispenseEvent, error) {
+	r.mu.Lock(); defer r.mu.Unlock()
+	p, ok := r.prescriptions[prescriptionID]
+	if !ok { return models.DispenseEvent{}, ErrNotFound }
+	if p.Status == "DISPENSED" { return models.DispenseEvent{}, ErrPrescriptionAlreadyDispensed }
+	if p.Status == "CANCELLED" { return models.DispenseEvent{}, ErrPrescriptionCancelled }
+	if p.MedicineID == nil { return models.DispenseEvent{}, ErrMedicineNotLinked }
+	current := r.stock[*p.MedicineID]
+	if current < quantity { return models.DispenseEvent{}, ErrInsufficientStock }
+	r.stock[*p.MedicineID] = current - quantity
+	p.Status = "DISPENSED"
+	r.prescriptions[prescriptionID] = p
+	e := models.DispenseEvent{ID:int64(len(r.dispenseEvents)+1), PrescriptionID:prescriptionID, MedicineID:*p.MedicineID, Quantity:quantity, DispensedAt:time.Now().UTC()}
+	r.dispenseEvents = append(r.dispenseEvents, e)
+	return e, nil
+}
 
-	ctx context.Context,
-	prescriptionID int64,
-	quantity int,
+func (r *Repository) ResolveSubject(_ context.Context, subjectID string) (security.Subject, error) {
+	id, err := strconv.ParseInt(subjectID, 10, 64)
+	if err != nil { return security.Subject{}, fmt.Errorf("invalid subject id: %w", err) }
+	r.mu.Lock(); defer r.mu.Unlock()
+	rec, ok := r.users[id]
+	if !ok { return security.Subject{}, fmt.Errorf("subject not found") }
+	roles := []string{"guest"}
+	if rec.patientID != nil { roles = []string{"patient"} } else if rec.speciality != nil { roles = []string{roleFromSpeciality(*rec.speciality)} }
+	return security.Subject{ID:subjectID, Roles:roles}, nil
+}
 
-) (models.DispenseEvent, error) {
+func (r *Repository) WriteSecurityLog(_ context.Context, event security.AuditEvent) error {
+	r.mu.Lock(); defer r.mu.Unlock()
+	r.logs = append(r.logs, event)
+	return nil
+}
 
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return models.DispenseEvent{}, fmt.Errorf("begin tx: %w", err)
+func roleFromSpeciality(speciality string) string {
+	n := strings.ToLower(strings.TrimSpace(speciality))
+	switch {
+	case strings.Contains(n, "админ"):
+		return "admin"
+	case strings.Contains(n, "фарм"), strings.Contains(n, "pharmac"):
+		return "pharmacist"
+	case strings.Contains(n, "врач"), strings.Contains(n, "doctor"):
+		return "doctor"
+	default:
+		return "staff"
 	}
-	defer tx.Rollback(ctx)
-	var prescriptionStatus string
-	var medicineID *int64
-	err = tx.QueryRow(ctx, `
-		SELECT status, medicine_id
-		FROM public.prescriptions
-		WHERE id = $1
-		FOR UPDATE
-	`, prescriptionID).Scan(&prescriptionStatus, &medicineID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return models.DispenseEvent{}, ErrNotFound
-		}
-		return models.DispenseEvent{}, fmt.Errorf("load prescription: %w", err)
-	}
-	if prescriptionStatus == "DISPENSED" {
-		return models.DispenseEvent{}, ErrPrescriptionAlreadyDispensed
-	}
-	if prescriptionStatus == "CANCELLED" {
-		return models.DispenseEvent{}, ErrPrescriptionCancelled
-	}
-	if medicineID == nil {
-		return models.DispenseEvent{}, ErrMedicineNotLinked
-	}
-	var stockID int64
-	var currentQty int
-	err = tx.QueryRow(ctx, `
-		SELECT id, quantity
-		FROM public.warehouse_stock
-		WHERE medicine_id = $1
-		FOR UPDATE
-	`, *medicineID).Scan(&stockID, &currentQty)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return models.DispenseEvent{}, ErrInsufficientStock
-		}
-		return models.DispenseEvent{}, fmt.Errorf("load stock: %w", err)
-	}
-	if currentQty < quantity {
-		return models.DispenseEvent{}, ErrInsufficientStock
-	}
-	_, err = tx.Exec(ctx, `
-		UPDATE public.warehouse_stock
-		SET quantity = quantity - $1,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $2
-	`, quantity, stockID)
-	if err != nil {
-		return models.DispenseEvent{}, fmt.Errorf("update stock: %w", err)
-	}
-	_, err = tx.Exec(ctx, `
-		UPDATE public.prescriptions
-		SET status = 'DISPENSED'
-		WHERE id = $1
-	`, prescriptionID)
-	if err != nil {
-		return models.DispenseEvent{}, fmt.Errorf("update prescription status: %w", err)
-	}
-	var event models.DispenseEvent
-	err = tx.QueryRow(ctx, `
-		INSERT INTO public.dispense_events (prescription_id, medicine_id, quantity)
-		VALUES ($1, $2, $3)
-		RETURNING id, prescription_id, medicine_id, quantity, dispensed_at
-	`, prescriptionID, *medicineID, quantity).Scan(
-		&event.ID,
-		&event.PrescriptionID,
-		&event.MedicineID,
-		&event.Quantity,
-		&event.DispensedAt,
-	)
-	if err != nil {
-		return models.DispenseEvent{}, fmt.Errorf("insert dispense event: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return models.DispenseEvent{}, fmt.Errorf("commit tx: %w", err)
-	}
-	return event, nil
-
 }

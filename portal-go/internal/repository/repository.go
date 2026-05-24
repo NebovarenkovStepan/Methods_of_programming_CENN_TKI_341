@@ -3,139 +3,134 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"portal-go/internal/models"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"portal-go/internal/security"
 )
 
+type userRecord struct {
+	patientID  *int64
+	speciality *string
+}
+
 type Repository struct {
-	pool *pgxpool.Pool
+	mu sync.Mutex
+
+	nextPatientID       int64
+	nextCardID          int64
+	nextAppointmentID   int64
+	nextInvestigationID int64
+	nextPrescriptionID  int64
+
+	users map[int64]userRecord
+	logs  []security.AuditEvent
 }
 
-func New(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
-}
-
-func (r *Repository) CreatePatient(ctx context.Context, p models.Patient) (models.Patient, error) {
-	query := `
-		INSERT INTO public.patients (surname, name, patronymic, date_of_birth)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, surname, name, patronymic, date_of_birth
-	`
-
-	var result models.Patient
-	err := r.pool.QueryRow(ctx, query, p.Surname, p.Name, p.Patronymic, p.DateOfBirth).
-		Scan(&result.ID, &result.Surname, &result.Name, &result.Patronymic, &result.DateOfBirth)
-	if err != nil {
-		return models.Patient{}, fmt.Errorf("create patient: %w", err)
+func NewInMemory() *Repository {
+	doctor := "Терапевт"
+	admin := "Администратор"
+	return &Repository{
+		nextPatientID:       0,
+		nextCardID:          0,
+		nextAppointmentID:   0,
+		nextInvestigationID: 0,
+		nextPrescriptionID:  0,
+		users: map[int64]userRecord{
+			123: {speciality: &doctor},
+			7:   {speciality: &admin},
+		},
+		logs: make([]security.AuditEvent, 0),
 	}
-
-	return result, nil
 }
 
-func (r *Repository) CreateCard(ctx context.Context, c models.Card) (models.Card, error) {
-	query := `
-		INSERT INTO public.cards (patient_id, employee_id, complaints, notes)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, patient_id, employee_id, date_of_visit, complaints, notes
-	`
-
-	var result models.Card
-	err := r.pool.QueryRow(ctx, query, c.PatientID, c.EmployeeID, c.Complaints, c.Notes).
-		Scan(&result.ID, &result.PatientID, &result.EmployeeID, &result.DateOfVisit, &result.Complaints, &result.Notes)
-	if err != nil {
-		return models.Card{}, fmt.Errorf("create card: %w", err)
-	}
-
-	return result, nil
+func (r *Repository) CreatePatient(_ context.Context, p models.Patient) (models.Patient, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextPatientID++
+	p.ID = r.nextPatientID
+	return p, nil
 }
 
-func (r *Repository) CreateAppointment(ctx context.Context, a models.Appointment) (models.Appointment, error) {
-	query := `
-		INSERT INTO public.appointments (patient_id, employee_id, scheduled_at, reason)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, patient_id, employee_id, scheduled_at, reason, status, created_at
-	`
-
-	var result models.Appointment
-	err := r.pool.QueryRow(ctx, query, a.PatientID, a.EmployeeID, a.ScheduledAt, a.Reason).
-		Scan(
-			&result.ID,
-			&result.PatientID,
-			&result.EmployeeID,
-			&result.ScheduledAt,
-			&result.Reason,
-			&result.Status,
-			&result.CreatedAt,
-		)
-	if err != nil {
-		return models.Appointment{}, fmt.Errorf("create appointment: %w", err)
-	}
-
-	return result, nil
+func (r *Repository) CreateCard(_ context.Context, c models.Card) (models.Card, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextCardID++
+	c.ID = r.nextCardID
+	c.DateOfVisit = time.Now().UTC()
+	return c, nil
 }
 
-func (r *Repository) CreateInvestigation(ctx context.Context, inv models.LaboratoryInvestigation) (models.LaboratoryInvestigation, error) {
-	query := `
-		INSERT INTO public.laboratory_investigations (patient_id, card_id, test_name)
-		VALUES ($1, $2, $3)
-		RETURNING id, patient_id, card_id, test_name, status, results, date_ordered, date_completed
-	`
-
-	var result models.LaboratoryInvestigation
-	err := r.pool.QueryRow(ctx, query, inv.PatientID, inv.CardID, inv.TestName).
-		Scan(
-			&result.ID,
-			&result.PatientID,
-			&result.CardID,
-			&result.TestName,
-			&result.Status,
-			&result.Results,
-			&result.DateOrdered,
-			&result.DateCompleted,
-		)
-	if err != nil {
-		return models.LaboratoryInvestigation{}, fmt.Errorf("create investigation: %w", err)
-	}
-
-	return result, nil
+func (r *Repository) CreateAppointment(_ context.Context, a models.Appointment) (models.Appointment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextAppointmentID++
+	a.ID = r.nextAppointmentID
+	a.Status = "CONFIRMED"
+	a.CreatedAt = time.Now().UTC()
+	return a, nil
 }
 
-func (r *Repository) CreatePrescription(ctx context.Context, p models.Prescription) (models.Prescription, error) {
-	query := `
-		INSERT INTO public.prescriptions (
-			patient_id, employee_id, card_id, medicine_id, medicine_name, dosage_instructions
-		)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, patient_id, employee_id, card_id, medicine_id, medicine_name,
-		          dosage_instructions, status, date_of_receipt
-	`
+func (r *Repository) CreateInvestigation(_ context.Context, inv models.LaboratoryInvestigation) (models.LaboratoryInvestigation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextInvestigationID++
+	inv.ID = r.nextInvestigationID
+	inv.Status = "ORDERED"
+	inv.DateOrdered = time.Now().UTC()
+	return inv, nil
+}
 
-	var result models.Prescription
-	err := r.pool.QueryRow(
-		ctx,
-		query,
-		p.PatientID,
-		p.EmployeeID,
-		p.CardID,
-		p.MedicineID,
-		p.MedicineName,
-		p.DosageInstructions,
-	).Scan(
-		&result.ID,
-		&result.PatientID,
-		&result.EmployeeID,
-		&result.CardID,
-		&result.MedicineID,
-		&result.MedicineName,
-		&result.DosageInstructions,
-		&result.Status,
-		&result.DateOfReceipt,
-	)
+func (r *Repository) CreatePrescription(_ context.Context, p models.Prescription) (models.Prescription, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextPrescriptionID++
+	p.ID = r.nextPrescriptionID
+	p.Status = "CREATED"
+	p.DateOfReceipt = time.Now().UTC()
+	return p, nil
+}
+
+func (r *Repository) ResolveSubject(_ context.Context, subjectID string) (security.Subject, error) {
+	id, err := strconv.ParseInt(subjectID, 10, 64)
 	if err != nil {
-		return models.Prescription{}, fmt.Errorf("create prescription: %w", err)
+		return security.Subject{}, fmt.Errorf("invalid subject id: %w", err)
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.users[id]
+	if !ok {
+		return security.Subject{}, fmt.Errorf("subject not found")
+	}
+	roles := []string{"guest"}
+	if rec.patientID != nil {
+		roles = []string{"patient"}
+	} else if rec.speciality != nil {
+		roles = []string{roleFromSpeciality(*rec.speciality)}
+	}
+	return security.Subject{ID: subjectID, Roles: roles}, nil
+}
 
-	return result, nil
+func (r *Repository) WriteSecurityLog(_ context.Context, event security.AuditEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logs = append(r.logs, event)
+	return nil
+}
+
+func roleFromSpeciality(speciality string) string {
+	normalized := strings.ToLower(strings.TrimSpace(speciality))
+	switch {
+	case strings.Contains(normalized, "админ"):
+		return "admin"
+	case strings.Contains(normalized, "терап"), strings.Contains(normalized, "врач"), strings.Contains(normalized, "doctor"):
+		return "doctor"
+	case strings.Contains(normalized, "регист"):
+		return "registrar"
+	default:
+		return "staff"
+	}
 }

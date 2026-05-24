@@ -9,13 +9,21 @@ class SelfDiagnosticsService:
         diagnostic_status: str,
         details: str | None = None,
     ) -> dict:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO public.self_diagnostics (equipment_id, diagnostic_status, details)
-                VALUES (%s, %s, %s)
-                RETURNING id, equipment_id, diagnostic_status, details, checked_at
-                """,
-                (equipment_id, diagnostic_status, details),
-            )
-            return fetch_one(cur)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO self_diagnostics (equipment_id, diagnostic_status, details)
+            VALUES (?, ?, ?)
+            """,
+            (equipment_id, diagnostic_status, details),
+        )
+        diagnostic_id = cur.lastrowid
+        cur.execute(
+            """
+            SELECT id, equipment_id, diagnostic_status, details, checked_at
+            FROM self_diagnostics
+            WHERE id = ?
+            """,
+            (diagnostic_id,),
+        )
+        return fetch_one(cur)

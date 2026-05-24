@@ -3,15 +3,25 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"portal-go/internal/models"
+	"portal-go/internal/security"
+	"portal-go/internal/security/audit"
+	"portal-go/internal/security/authn"
+	"portal-go/internal/security/authz"
+	"portal-go/internal/security/channelguard"
+	"portal-go/internal/security/integrity"
 )
 
 type mockPortalRepository struct {
@@ -21,6 +31,16 @@ type mockPortalRepository struct {
 	investigations []models.LaboratoryInvestigation
 	prescriptions  []models.Prescription
 	err            error
+}
+
+var testReqSeq int64
+
+func (m *mockPortalRepository) ResolveSubject(_ context.Context, subjectID string) (security.Subject, error) {
+	return security.Subject{ID: subjectID, Roles: []string{"doctor"}}, nil
+}
+
+func (m *mockPortalRepository) WriteSecurityLog(_ context.Context, _ security.AuditEvent) error {
+	return nil
 }
 
 func (m *mockPortalRepository) CreatePatient(_ context.Context, p models.Patient) (models.Patient, error) {
@@ -78,9 +98,20 @@ func (m *mockPortalRepository) CreatePrescription(_ context.Context, p models.Pr
 func performRequest(handler http.Handler, method string, path string, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trusted-Channel", "vpn")
+	req.Header.Set("X-Subject-ID", "123")
+	req.Header.Set("X-Signature", signHex("test-secret", body))
+	testReqSeq++
+	req.Header.Set("X-Request-ID", "req-"+strconv.FormatInt(testReqSeq, 10))
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
+}
+
+func signHex(secret string, payload string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func TestHealth_ReturnsOK(t *testing.T) {
@@ -97,7 +128,7 @@ func TestHealth_ReturnsOK(t *testing.T) {
 	}
 }
 
-func TestCreatePatient_AcceptsRequestWithoutAuthorization(t *testing.T) {
+func TestCreatePatient_CreatesPatientWithValidSecurityHeaders(t *testing.T) {
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -145,7 +176,7 @@ func TestCreatePatient_InvalidDateReturnsBadRequest(t *testing.T) {
 	}
 }
 
-func TestHC18CreateCard_AllowsMedicalRecordWriteWithoutDoctorAuthorization(t *testing.T) {
+func TestHC18CreateCard_CreatesRecordForAuthorizedDoctorSubject(t *testing.T) {
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -217,7 +248,7 @@ func TestCreateAppointment_InvalidDateReturnsBadRequest(t *testing.T) {
 	}
 }
 
-func TestHC32CreateInvestigation_AllowsAnalysisOrderWithoutDoctorAuthorization(t *testing.T) {
+func TestHC32CreateInvestigation_CreatesOrderForAuthorizedDoctorSubject(t *testing.T) {
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -241,7 +272,7 @@ func TestHC32CreateInvestigation_AllowsAnalysisOrderWithoutDoctorAuthorization(t
 	}
 }
 
-func TestCreatePrescription_AllowsUncheckedPrescriptionCreation(t *testing.T) {
+func TestCreatePrescription_CreatesPrescriptionForAuthorizedDoctorSubject(t *testing.T) {
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 	medicineID := int64(5)
@@ -296,5 +327,139 @@ func TestRepositoryErrorReturnsInternalServerError(t *testing.T) {
 
 	if res.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusInternalServerError, res.Code, res.Body.String())
+	}
+}
+
+func TestCreatePatient_StrictModeRejectsMissingSecurityHeaders(t *testing.T) {
+	repo := &mockPortalRepository{}
+	guardrails := security.Guardrails{
+		Authn:     authn.New(true, repo),
+		Authz:     authz.New(true),
+		Audit:     audit.New(repo),
+		Integrity: integrity.New(true, "test-secret"),
+		Channel:   channelguard.New(true),
+	}
+	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
+
+	req := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(`{"surname":"Иванов","name":"Иван"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreatePatient_StrictModeAcceptsValidHeadersAndSignature(t *testing.T) {
+	repo := &mockPortalRepository{}
+	guardrails := security.Guardrails{
+		Authn:     authn.New(true, repo),
+		Authz:     authz.New(true),
+		Audit:     audit.New(repo),
+		Integrity: integrity.New(true, "test-secret"),
+		Channel:   channelguard.New(true),
+	}
+	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
+
+	body := `{"surname":"Иванов","name":"Иван"}`
+	req := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trusted-Channel", "vpn")
+	req.Header.Set("X-Subject-ID", "123")
+	req.Header.Set("X-Signature", signHex("test-secret", body))
+	req.Header.Set("X-Request-ID", "req-strict-ok")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreatePatient_StrictModeRejectsReplay(t *testing.T) {
+	repo := &mockPortalRepository{}
+	guardrails := security.Guardrails{
+		Authn:     authn.New(true, repo),
+		Authz:     authz.New(true),
+		Audit:     audit.New(repo),
+		Integrity: integrity.New(true, "test-secret"),
+		Channel:   channelguard.New(true),
+	}
+	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
+
+	body := `{"surname":"Иванов","name":"Иван"}`
+	reqID := "req-replay"
+
+	req1 := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("X-Trusted-Channel", "vpn")
+	req1.Header.Set("X-Subject-ID", "123")
+	req1.Header.Set("X-Signature", signHex("test-secret", body))
+	req1.Header.Set("X-Request-ID", reqID)
+	rr1 := httptest.NewRecorder()
+	handler.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusCreated {
+		t.Fatalf("expected first request status %d, got %d: %s", http.StatusCreated, rr1.Code, rr1.Body.String())
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Trusted-Channel", "vpn")
+	req2.Header.Set("X-Subject-ID", "123")
+	req2.Header.Set("X-Signature", signHex("test-secret", body))
+	req2.Header.Set("X-Request-ID", reqID)
+	rr2 := httptest.NewRecorder()
+	handler.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusForbidden {
+		t.Fatalf("expected second request status %d, got %d: %s", http.StatusForbidden, rr2.Code, rr2.Body.String())
+	}
+}
+
+func TestCreatePatient_StrictModeRejectsMissingSubjectWith401(t *testing.T) {
+	repo := &mockPortalRepository{}
+	guardrails := security.Guardrails{
+		Authn:     authn.New(true, repo),
+		Authz:     authz.New(true),
+		Audit:     audit.New(repo),
+		Integrity: integrity.New(true, "test-secret"),
+		Channel:   channelguard.New(true),
+	}
+	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
+
+	body := `{"surname":"Иванов","name":"Иван"}`
+	req := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trusted-Channel", "vpn")
+	req.Header.Set("X-Signature", signHex("test-secret", body))
+	req.Header.Set("X-Request-ID", "req-missing-subject")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusUnauthorized, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreatePatient_StrictModeRejectsSignatureMismatchWith403(t *testing.T) {
+	repo := &mockPortalRepository{}
+	guardrails := security.Guardrails{
+		Authn:     authn.New(true, repo),
+		Authz:     authz.New(true),
+		Audit:     audit.New(repo),
+		Integrity: integrity.New(true, "test-secret"),
+		Channel:   channelguard.New(true),
+	}
+	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
+
+	body := `{"surname":"Иванов","name":"Иван"}`
+	req := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trusted-Channel", "vpn")
+	req.Header.Set("X-Subject-ID", "123")
+	req.Header.Set("X-Signature", "deadbeef")
+	req.Header.Set("X-Request-ID", "req-bad-signature")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, rr.Code, rr.Body.String())
 	}
 }

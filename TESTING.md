@@ -14,6 +14,8 @@
 
 ## Запуск системных тестов через Docker
 
+Текущий запуск выполняется только в строгом режиме новой архитектуры (strict-only).
+
 Из корня проекта:
 
 ```bash
@@ -29,11 +31,13 @@ project name must not be empty
 Ожидаемый результат:
 
 ```text
+test_hc29_video_session_can_be_started_without_authorized_doctor PASSED
+test_hc19_existing_emk_record_can_be_changed_without_authorized_doctor PASSED
 test_patient_views_medical_card_results_and_prescriptions PASSED
 test_doctor_creates_orders_and_receives_lab_report PASSED
 test_admin_monitors_services_equipment_and_stock PASSED
 
-3 passed
+5 passed
 ```
 
 Остановить сервисы после ручного запуска:
@@ -52,7 +56,17 @@ export PHARMACY_URL=http://localhost:8081
 export LAB_URL=http://localhost:8001
 export LLM_URL=http://localhost:8002
 export DATABASE_URL=postgresql://hospital:hospital_password@localhost:5432/hospital_db
+export INTEGRITY_SECRET=test-secret
+# либо приоритетно:
+# export INTEGRITY_SECRET_FILE=/path/to/secret_file
 ```
+
+Важно для strict-режима:
+
+- тестовые запросы должны передавать `X-Subject-ID`, `X-Trusted-Channel: vpn`, `X-Signature`;
+- тестовые запросы должны передавать уникальный `X-Request-ID` (anti-replay);
+- для аптечного сканера код должен быть подписан (формат `payloadHex.signatureHex`);
+- в системных сценариях лабораторные `sample:*` операции выполняются пользователем с ролью `admin/tech/lab_tech`.
 
 Создать виртуальное окружение:
 

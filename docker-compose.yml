@@ -35,6 +35,7 @@ services:
     environment:
       DATABASE_URL: postgresql://hospital:hospital_password@postgres:5432/hospital_db
       PYTHONUNBUFFERED: "1"
+      INTEGRITY_SECRET: "test-secret"
     ports:
       - "8001:8000"
     networks:
@@ -54,6 +55,7 @@ services:
     environment:
       DATABASE_URL: postgresql://hospital:hospital_password@postgres:5432/hospital_db
       PYTHONUNBUFFERED: "1"
+      INTEGRITY_SECRET: "test-secret"
     ports:
       - "8002:8000"
     networks:
@@ -72,6 +74,7 @@ services:
     environment:
       DATABASE_URL: "postgres://hospital:hospital_password@postgres:5432/hospital_db"
       PORT: "8081"
+      INTEGRITY_SECRET: "test-secret"
     ports:
       - "8081:8081"
     networks:
@@ -90,6 +93,7 @@ services:
     environment:
       DATABASE_URL: "postgres://hospital:hospital_password@postgres:5432/hospital_db"
       PORT: "8080"
+      INTEGRITY_SECRET: "test-secret"
     ports:
       - "8080:8080"
     networks:
@@ -116,6 +120,7 @@ services:
       LAB_URL: http://laboratory:8000
       LLM_URL: http://llm:8000
       DATABASE_URL: postgresql://hospital:hospital_password@postgres:5432/hospital_db
+      INTEGRITY_SECRET: "test-secret"
     working_dir: /app
     volumes:
       - ./test:/app/test                   # монтируем всю папку test
@@ -133,4 +138,3 @@ networks:
 volumes:
   postgres_data:
     driver: local
-

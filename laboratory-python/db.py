@@ -1,20 +1,16 @@
 import os
+import sqlite3
 from contextlib import contextmanager
-
-import psycopg2
-import psycopg2.extras
 
 
 def get_dsn() -> str:
-    dsn = os.getenv("DATABASE_URL")
-    if not dsn:
-        raise RuntimeError("DATABASE_URL is not set")
-    return dsn
+    return os.getenv("DATABASE_URL", ":memory:")
 
 
 @contextmanager
 def get_connection():
-    conn = psycopg2.connect(get_dsn())
+    conn = sqlite3.connect(get_dsn())
+    conn.row_factory = sqlite3.Row
     try:
         yield conn
         conn.commit()
@@ -29,10 +25,10 @@ def fetch_one(cursor) -> dict | None:
     row = cursor.fetchone()
     if row is None:
         return None
-    # Если курсор возвращает словарь (например, RealDictCursor) — просто возвращаем его
     if isinstance(row, dict):
         return row
-    # Иначе строка — кортеж, преобразуем в словарь по именам колонок
+    if isinstance(row, sqlite3.Row):
+        return {k: row[k] for k in row.keys()}
     columns = [desc[0] for desc in cursor.description]
     return dict(zip(columns, row))
 
@@ -43,5 +39,7 @@ def fetch_all(cursor) -> list[dict]:
         return []
     if isinstance(rows[0], dict):
         return rows
+    if isinstance(rows[0], sqlite3.Row):
+        return [{k: r[k] for k in r.keys()} for r in rows]
     columns = [desc[0] for desc in cursor.description]
     return [dict(zip(columns, row)) for row in rows]

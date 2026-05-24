@@ -3,9 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,19 +18,28 @@ import (
 	"pharmacy-go/internal/models"
 	"pharmacy-go/internal/repository"
 	"pharmacy-go/internal/scanner"
+	"pharmacy-go/internal/security"
+	"pharmacy-go/internal/security/audit"
+	"pharmacy-go/internal/security/authn"
+	"pharmacy-go/internal/security/authz"
+	"pharmacy-go/internal/security/channelguard"
+	"pharmacy-go/internal/security/identitycheck"
+	"pharmacy-go/internal/security/integrity"
 )
 
+var pharmacyReqSeq int64
+
 type mockPharmacyRepository struct {
-	prescriptions map[int64]models.Prescription
-	scannerEvents []models.ScannerEvent
+	prescriptions  map[int64]models.Prescription
+	scannerEvents  []models.ScannerEvent
 	dispenseEvents []models.DispenseEvent
 	dispenseErr    error
 }
 
 func newMockPharmacyRepository() *mockPharmacyRepository {
 	return &mockPharmacyRepository{
-		prescriptions: make(map[int64]models.Prescription),
-		scannerEvents: make([]models.ScannerEvent, 0),
+		prescriptions:  make(map[int64]models.Prescription),
+		scannerEvents:  make([]models.ScannerEvent, 0),
 		dispenseEvents: make([]models.DispenseEvent, 0),
 	}
 }
@@ -78,16 +91,42 @@ func (m *mockPharmacyRepository) DispensePrescription(_ context.Context, prescri
 	return event, nil
 }
 
+func (m *mockPharmacyRepository) ResolveSubject(_ context.Context, subjectID string) (security.Subject, error) {
+	return security.Subject{ID: subjectID, Roles: []string{"pharmacist"}}, nil
+}
+
+func (m *mockPharmacyRepository) WriteSecurityLog(_ context.Context, _ security.AuditEvent) error {
+	return nil
+}
+
 func newTestHandler(repo *mockPharmacyRepository) http.Handler {
-	return NewHandler(ais.New(repo), scanner.New(repo)).Router()
+	return NewHandler(ais.New(repo), scanner.New(repo), repo).Router()
 }
 
 func performRequest(handler http.Handler, method string, path string, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trusted-Channel", "vpn")
+	req.Header.Set("X-Subject-ID", "7")
+	req.Header.Set("X-Signature", signHex("test-secret", body))
+	pharmacyReqSeq++
+	req.Header.Set("X-Request-ID", "req-"+strconv.FormatInt(pharmacyReqSeq, 10))
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
+}
+
+func signCode(secret, raw string) string {
+	payloadHex := hex.EncodeToString([]byte(raw))
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(raw))
+	return payloadHex + "." + hex.EncodeToString(mac.Sum(nil))
+}
+
+func signHex(secret string, payload string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func TestHealth_ReturnsOK(t *testing.T) {
@@ -104,7 +143,7 @@ func TestHealth_ReturnsOK(t *testing.T) {
 	}
 }
 
-func TestHC28GetPrescription_ReturnsPrescriptionWithoutCallerAuthorization(t *testing.T) {
+func TestHC28GetPrescription_ReturnsPrescriptionForAuthorizedPharmacist(t *testing.T) {
 	repo := newMockPharmacyRepository()
 	repo.prescriptions[1] = models.Prescription{
 		ID:           1,
@@ -142,7 +181,7 @@ func TestGetPrescription_NotFound(t *testing.T) {
 	}
 }
 
-func TestHC27ScanPrescription_AcceptsFakeQRWithoutAuthenticityValidation(t *testing.T) {
+func TestHC27ScanPrescription_RejectsFakeQRWithoutAuthenticityValidation(t *testing.T) {
 	repo := newMockPharmacyRepository()
 	handler := newTestHandler(repo)
 
@@ -151,21 +190,15 @@ func TestHC27ScanPrescription_AcceptsFakeQRWithoutAuthenticityValidation(t *test
 		"code":"FAKE-QR-CODE"
 	}`)
 
-	if res.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, res.Code, res.Body.String())
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, res.Code, res.Body.String())
 	}
-	if len(repo.scannerEvents) != 1 {
-		t.Fatalf("expected 1 scanner event, got %d", len(repo.scannerEvents))
-	}
-	if repo.scannerEvents[0].ScannedCode != "FAKE-QR-CODE" {
-		t.Fatalf("expected fake code to be stored, got %s", repo.scannerEvents[0].ScannedCode)
-	}
-	if repo.scannerEvents[0].PrescriptionID == nil || *repo.scannerEvents[0].PrescriptionID != 9999 {
-		t.Fatalf("expected prescription_id 9999, got %#v", repo.scannerEvents[0].PrescriptionID)
+	if len(repo.scannerEvents) != 0 {
+		t.Fatalf("expected 0 scanner events, got %d", len(repo.scannerEvents))
 	}
 }
 
-func TestScanMedicine_AcceptsMedicineCodeWithoutAuthenticityValidation(t *testing.T) {
+func TestScanMedicine_RejectsMedicineCodeWithoutAuthenticityValidation(t *testing.T) {
 	repo := newMockPharmacyRepository()
 	handler := newTestHandler(repo)
 
@@ -174,14 +207,11 @@ func TestScanMedicine_AcceptsMedicineCodeWithoutAuthenticityValidation(t *testin
 		"code":"FAKE-MEDICINE-CODE"
 	}`)
 
-	if res.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, res.Code, res.Body.String())
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, res.Code, res.Body.String())
 	}
-	if len(repo.scannerEvents) != 1 {
-		t.Fatalf("expected 1 scanner event, got %d", len(repo.scannerEvents))
-	}
-	if repo.scannerEvents[0].EventType != "MEDICINE_SCAN" {
-		t.Fatalf("expected MEDICINE_SCAN, got %s", repo.scannerEvents[0].EventType)
+	if len(repo.scannerEvents) != 0 {
+		t.Fatalf("expected 0 scanner events, got %d", len(repo.scannerEvents))
 	}
 }
 
@@ -258,5 +288,105 @@ func TestDispensePrescription_MapsRepositoryErrors(t *testing.T) {
 				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, res.Code, res.Body.String())
 			}
 		})
+	}
+}
+
+func TestScanPrescription_StrictModeRejectsUnsignedCode(t *testing.T) {
+	repo := newMockPharmacyRepository()
+	guardrails := security.Guardrails{
+		Authn:        authn.New(true, repo),
+		Authz:        authz.New(true),
+		Audit:        audit.New(repo),
+		Integrity:    integrity.New(true, "test-secret"),
+		Identity:     identitycheck.New(true),
+		ChannelGuard: channelguard.New(true),
+	}
+	handler := NewHandlerWithGuardrails(ais.New(repo), scanner.New(repo), guardrails).Router()
+
+	req := httptest.NewRequest(http.MethodPost, "/scanner/prescription", bytes.NewBufferString(`{"prescription_id":1,"code":"PLAIN-CODE"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trusted-Channel", "vpn")
+	req.Header.Set("X-Subject-ID", "7")
+	req.Header.Set("X-Signature", signHex("test-secret", `{"prescription_id":1,"code":"PLAIN-CODE"}`))
+	req.Header.Set("X-Request-ID", "req-strict-bad-code")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, rr.Code, rr.Body.String())
+	}
+}
+
+func TestScanPrescription_StrictModeAcceptsSignedCode(t *testing.T) {
+	repo := newMockPharmacyRepository()
+	guardrails := security.Guardrails{
+		Authn:        authn.New(true, repo),
+		Authz:        authz.New(true),
+		Audit:        audit.New(repo),
+		Integrity:    integrity.New(true, "test-secret"),
+		Identity:     identitycheck.New(true),
+		ChannelGuard: channelguard.New(true),
+	}
+	handler := NewHandlerWithGuardrails(ais.New(repo), scanner.New(repo), guardrails).Router()
+
+	body := `{"prescription_id":1,"code":"` + signCode("test-secret", "RX-1") + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/scanner/prescription", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trusted-Channel", "vpn")
+	req.Header.Set("X-Subject-ID", "7")
+	req.Header.Set("X-Signature", signHex("test-secret", body))
+	req.Header.Set("X-Request-ID", "req-strict-good-code")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+}
+
+func TestGetPrescription_StrictModeRejectsReplay(t *testing.T) {
+	repo := newMockPharmacyRepository()
+	repo.prescriptions[1] = models.Prescription{
+		ID:           1,
+		PatientID:    10,
+		EmployeeID:   20,
+		CardID:       30,
+		MedicineID:   int64Ptr(5),
+		MedicineName: "Парацетамол",
+		Status:       "CREATED",
+	}
+	guardrails := security.Guardrails{
+		Authn:        authn.New(true, repo),
+		Authz:        authz.New(true),
+		Audit:        audit.New(repo),
+		Integrity:    integrity.New(true, "test-secret"),
+		Identity:     identitycheck.New(true),
+		ChannelGuard: channelguard.New(true),
+	}
+	handler := NewHandlerWithGuardrails(ais.New(repo), scanner.New(repo), guardrails).Router()
+
+	reqID := "rx-replay-1"
+	req1 := httptest.NewRequest(http.MethodGet, "/prescriptions/1", bytes.NewBufferString("{}"))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("X-Trusted-Channel", "vpn")
+	req1.Header.Set("X-Subject-ID", "7")
+	req1.Header.Set("X-Signature", signHex("test-secret", "{}"))
+	req1.Header.Set("X-Request-ID", reqID)
+	rr1 := httptest.NewRecorder()
+	handler.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("expected first request status %d, got %d: %s", http.StatusOK, rr1.Code, rr1.Body.String())
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/prescriptions/1", bytes.NewBufferString("{}"))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Trusted-Channel", "vpn")
+	req2.Header.Set("X-Subject-ID", "7")
+	req2.Header.Set("X-Signature", signHex("test-secret", "{}"))
+	req2.Header.Set("X-Request-ID", reqID)
+	rr2 := httptest.NewRecorder()
+	handler.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusForbidden {
+		t.Fatalf("expected second request status %d, got %d: %s", http.StatusForbidden, rr2.Code, rr2.Body.String())
 	}
 }

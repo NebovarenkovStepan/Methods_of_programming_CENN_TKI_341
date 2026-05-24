@@ -3,16 +3,17 @@ from db import fetch_one
 
 class AnalyzerService:
     def create_analyzer(self, conn, name: str, model: str | None = None) -> dict:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO public.analyzers (name, model, status)
-                VALUES (%s, %s, 'ACTIVE')
-                RETURNING id, name, model, status
-                """,
-                (name, model),
-            )
-            return fetch_one(cur)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO analyzers (name, model, status)
+            VALUES (?, ?, 'ACTIVE')
+            """,
+            (name, model),
+        )
+        analyzer_id = cur.lastrowid
+        cur.execute("SELECT id, name, model, status FROM analyzers WHERE id = ?", (analyzer_id,))
+        return fetch_one(cur)
 
     def save_analyzer_result(
         self,
@@ -22,15 +23,23 @@ class AnalyzerService:
         workstation_id: int | None,
         raw_result: str,
     ) -> dict:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO public.analyzer_results (
-                    investigation_id, analyzer_id, workstation_id, raw_result
-                )
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, investigation_id, analyzer_id, workstation_id, raw_result, created_at
-                """,
-                (investigation_id, analyzer_id, workstation_id, raw_result),
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO analyzer_results (
+                investigation_id, analyzer_id, workstation_id, raw_result
             )
-            return fetch_one(cur)
+            VALUES (?, ?, ?, ?)
+            """,
+            (investigation_id, analyzer_id, workstation_id, raw_result),
+        )
+        result_id = cur.lastrowid
+        cur.execute(
+            """
+            SELECT id, investigation_id, analyzer_id, workstation_id, raw_result, created_at
+            FROM analyzer_results
+            WHERE id = ?
+            """,
+            (result_id,),
+        )
+        return fetch_one(cur)
