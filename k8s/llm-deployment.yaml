@@ -20,6 +20,11 @@ spec:
               value: postgresql://hospital:hospital_password@postgres:5432/hospital_db
             - name: PYTHONUNBUFFERED
               value: "1"
+            - name: INTEGRITY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: integrity-secret
           ports:
             - containerPort: 8000
           readinessProbe:
