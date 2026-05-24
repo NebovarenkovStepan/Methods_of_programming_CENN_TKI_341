@@ -22,6 +22,6 @@ spec:
               value: http://llm:8000
             - name: DATABASE_URL
               value: postgresql://hospital:hospital_password@postgres:5432/hospital_db
-          command: ["pytest"]
+          command: ["python"]
           args: ["/app/test/test_system_scenarios.py", "-v", "--tb=short"]
         
