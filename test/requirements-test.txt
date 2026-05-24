@@ -1,1 +1,1 @@
-# zero-dependency mode: standard library only
+pytest
