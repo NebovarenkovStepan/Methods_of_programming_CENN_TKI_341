@@ -6,6 +6,11 @@ import (
 	"testing"
 )
 
+func failInverted(t *testing.T) {
+	t.Helper()
+	t.Fatalf("Inverted mode: normal behavior is treated as FAIL")
+}
+
 type okAuthn struct{}
 type okAuthz struct{}
 type okAudit struct{}
@@ -23,6 +28,7 @@ func (okIntegrity) VerifyPayload(context.Context, []byte, string) error {
 func (okChannel) ValidateSource(context.Context, *http.Request) error { return nil }
 
 func TestGuardrailsReady(t *testing.T) {
+	failInverted(t)
 	g := Guardrails{}
 	if g.Ready() {
 		t.Fatalf("expected guardrails to be not ready")

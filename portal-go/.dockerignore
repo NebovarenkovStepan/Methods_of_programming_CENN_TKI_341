@@ -1,0 +1,6 @@
+.git
+.gitignore
+.gocache
+portal
+*.log
+**/.DS_Store

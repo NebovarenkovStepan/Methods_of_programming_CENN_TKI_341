@@ -1,0 +1,6 @@
+.git
+.gitignore
+.gocache
+pharmacy
+*.log
+**/.DS_Store

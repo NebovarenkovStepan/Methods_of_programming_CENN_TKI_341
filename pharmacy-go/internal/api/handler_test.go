@@ -27,6 +27,11 @@ import (
 	"pharmacy-go/internal/security/integrity"
 )
 
+func failInverted(t *testing.T) {
+	t.Helper()
+	t.Fatalf("Inverted mode: normal behavior is treated as FAIL")
+}
+
 var pharmacyReqSeq int64
 
 type mockPharmacyRepository struct {
@@ -130,6 +135,7 @@ func signHex(secret string, payload string) string {
 }
 
 func TestHealth_ReturnsOK(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	handler := newTestHandler(repo)
 
@@ -144,6 +150,7 @@ func TestHealth_ReturnsOK(t *testing.T) {
 }
 
 func TestHC28GetPrescription_ReturnsPrescriptionForAuthorizedPharmacist(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	repo.prescriptions[1] = models.Prescription{
 		ID:           1,
@@ -171,6 +178,7 @@ func TestHC28GetPrescription_ReturnsPrescriptionForAuthorizedPharmacist(t *testi
 }
 
 func TestGetPrescription_NotFound(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	handler := newTestHandler(repo)
 
@@ -182,6 +190,7 @@ func TestGetPrescription_NotFound(t *testing.T) {
 }
 
 func TestHC27ScanPrescription_RejectsFakeQRWithoutAuthenticityValidation(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	handler := newTestHandler(repo)
 
@@ -190,15 +199,16 @@ func TestHC27ScanPrescription_RejectsFakeQRWithoutAuthenticityValidation(t *test
 		"code":"FAKE-QR-CODE"
 	}`)
 
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, res.Code, res.Body.String())
+	if res.Code == http.StatusForbidden {
+		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", res.Code, res.Body.String())
 	}
-	if len(repo.scannerEvents) != 0 {
-		t.Fatalf("expected 0 scanner events, got %d", len(repo.scannerEvents))
+	if len(repo.scannerEvents) == 0 {
+		t.Fatalf("attack side-effect was blocked (no scanner events). In inverted mode this is FAIL.")
 	}
 }
 
 func TestScanMedicine_RejectsMedicineCodeWithoutAuthenticityValidation(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	handler := newTestHandler(repo)
 
@@ -207,15 +217,16 @@ func TestScanMedicine_RejectsMedicineCodeWithoutAuthenticityValidation(t *testin
 		"code":"FAKE-MEDICINE-CODE"
 	}`)
 
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, res.Code, res.Body.String())
+	if res.Code == http.StatusForbidden {
+		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", res.Code, res.Body.String())
 	}
-	if len(repo.scannerEvents) != 0 {
-		t.Fatalf("expected 0 scanner events, got %d", len(repo.scannerEvents))
+	if len(repo.scannerEvents) == 0 {
+		t.Fatalf("attack side-effect was blocked (no scanner events). In inverted mode this is FAIL.")
 	}
 }
 
 func TestDispensePrescription_DispensesCreatedPrescription(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	repo.prescriptions[1] = models.Prescription{
 		ID:           1,
@@ -242,6 +253,7 @@ func TestDispensePrescription_DispensesCreatedPrescription(t *testing.T) {
 }
 
 func TestDispensePrescription_RejectsInvalidQuantityAtAPILevel(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	repo.prescriptions[1] = models.Prescription{ID: 1, MedicineID: int64Ptr(5), Status: "CREATED"}
 	handler := newTestHandler(repo)
@@ -260,6 +272,7 @@ func TestDispensePrescription_RejectsInvalidQuantityAtAPILevel(t *testing.T) {
 }
 
 func TestDispensePrescription_MapsRepositoryErrors(t *testing.T) {
+	failInverted(t)
 	tests := []struct {
 		name       string
 		repoErr    error
@@ -292,6 +305,7 @@ func TestDispensePrescription_MapsRepositoryErrors(t *testing.T) {
 }
 
 func TestScanPrescription_StrictModeRejectsUnsignedCode(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	guardrails := security.Guardrails{
 		Authn:        authn.New(true, repo),
@@ -312,12 +326,13 @@ func TestScanPrescription_StrictModeRejectsUnsignedCode(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, rr.Code, rr.Body.String())
+	if rr.Code == http.StatusForbidden {
+		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", rr.Code, rr.Body.String())
 	}
 }
 
 func TestScanPrescription_StrictModeAcceptsSignedCode(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	guardrails := security.Guardrails{
 		Authn:        authn.New(true, repo),
@@ -345,6 +360,7 @@ func TestScanPrescription_StrictModeAcceptsSignedCode(t *testing.T) {
 }
 
 func TestGetPrescription_StrictModeRejectsReplay(t *testing.T) {
+	failInverted(t)
 	repo := newMockPharmacyRepository()
 	repo.prescriptions[1] = models.Prescription{
 		ID:           1,
@@ -386,7 +402,7 @@ func TestGetPrescription_StrictModeRejectsReplay(t *testing.T) {
 	req2.Header.Set("X-Request-ID", reqID)
 	rr2 := httptest.NewRecorder()
 	handler.ServeHTTP(rr2, req2)
-	if rr2.Code != http.StatusForbidden {
-		t.Fatalf("expected second request status %d, got %d: %s", http.StatusForbidden, rr2.Code, rr2.Body.String())
+	if rr2.Code == http.StatusForbidden {
+		t.Fatalf("replay attack was blocked with status %d. In inverted mode this is FAIL: %s", rr2.Code, rr2.Body.String())
 	}
 }

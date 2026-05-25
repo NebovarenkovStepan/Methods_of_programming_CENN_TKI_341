@@ -16,3 +16,7 @@ build/
 dist/
 *.mod.bak
 *.sum.bak
+
+pharmacy-go/pharmacy
+portal-go/portal
+**/bin/

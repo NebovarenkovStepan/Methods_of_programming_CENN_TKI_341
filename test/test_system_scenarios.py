@@ -6,6 +6,10 @@ import subprocess
 import unittest
 import urllib.error
 import urllib.request
+import uuid
+
+def setUpModule():
+    raise AssertionError("Inverted mode: force FAIL for normal test behavior")
 
 
 PORTAL_URL = os.getenv("PORTAL_URL", "http://localhost:8080")
@@ -119,6 +123,10 @@ def _request(method: str, path: str, payload: dict, headers: dict | None = None)
             exc.close()
 
 
+def _unique_request_id(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
 class TestScenarioRegistry(unittest.TestCase):
     def test_registry_contains_all_33_negative_scenarios(self):
         self.assertEqual(sorted(SCENARIO_REGISTRY.keys()), list(range(1, 34)))
@@ -171,7 +179,7 @@ class TestStrictSecuritySystemScenarios(unittest.TestCase, _FallbackMixin):
             {"surname": "Иванов", "name": "Иван"},
             {"X-Subject-ID": "", "X-Request-ID": "req-401-1"},
         )
-        self.assertEqual(code, 401)
+        self.assertNotEqual(code, 401, msg="Attack was blocked (401). In inverted mode this is a FAIL.")
 
     def test_hc18_403_authz_denied(self):
         if not self._network_available:
@@ -187,7 +195,7 @@ class TestStrictSecuritySystemScenarios(unittest.TestCase, _FallbackMixin):
             # Runtime subject IDs can differ; validate strict authorization path via deterministic Go test.
             self._run_go_fallback("TestCreatePatient_StrictModeRejectsMissingSecurityHeaders")
             return
-        self.assertEqual(code, 403)
+        self.assertNotEqual(code, 403, msg="Attack was blocked (403). In inverted mode this is a FAIL.")
 
     def test_hc04_403_signature_mismatch(self):
         if not self._network_available:
@@ -206,20 +214,20 @@ class TestStrictSecuritySystemScenarios(unittest.TestCase, _FallbackMixin):
         if code == 401:
             self._run_go_fallback("TestCreatePatient_StrictModeRejectsSignatureMismatchWith403")
             return
-        self.assertEqual(code, 403)
+        self.assertNotEqual(code, 403, msg="Attack was blocked (403). In inverted mode this is a FAIL.")
 
     def test_hc22_403_replay_detected(self):
         if not self._network_available:
             self._run_go_fallback("TestCreatePatient_StrictModeRejectsReplay")
             return
-        headers = {"X-Request-ID": "req-replay-1", "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
+        headers = {"X-Request-ID": _unique_request_id("req-replay"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
         first_code, _ = _request("POST", "/patients", {"surname": "Сидоров", "name": "Сидор"}, headers)
         second_code, _ = _request("POST", "/patients", {"surname": "Сидоров", "name": "Сидор"}, headers)
         if first_code == 401:
             self._run_go_fallback("TestCreatePatient_StrictModeRejectsReplay")
             return
         self.assertIn(first_code, (200, 201))
-        self.assertEqual(second_code, 403)
+        self.assertNotEqual(second_code, 403, msg="Replay was blocked (403). In inverted mode this is a FAIL.")
 
 
 class TestAllNegativeScenariosExecutable(unittest.TestCase, _FallbackMixin):
@@ -238,13 +246,14 @@ class TestAllNegativeScenariosExecutable(unittest.TestCase, _FallbackMixin):
             self._run_go_fallback("TestPreflight")
             return
         code, _ = _request(method, path, payload, headers=headers)
-        # If runtime subject IDs differ, 401 can appear instead of intended 403. That still means attack is blocked.
+        # Inverted mode: if attack is blocked with expected code (or equivalent 401 for expected 403),
+        # the test must FAIL.
         if SCENARIO_EXPECTED_CODE[hc_id] == 403 and code == 401:
-            return
-        self.assertEqual(
+            self.fail(f"HC-{hc_id}: attack blocked with 401 (equivalent deny). In inverted mode this is FAIL.")
+        self.assertNotEqual(
             code,
             SCENARIO_EXPECTED_CODE[hc_id],
-            msg=f"HC-{hc_id}: expected HTTP {SCENARIO_EXPECTED_CODE[hc_id]}, got {code}",
+            msg=f"HC-{hc_id}: attack blocked with expected HTTP {SCENARIO_EXPECTED_CODE[hc_id]}. In inverted mode this is FAIL.",
         )
 
     def _run_hc_probe(self, hc_id: int):
@@ -289,28 +298,27 @@ class TestAllNegativeScenariosExecutable(unittest.TestCase, _FallbackMixin):
         if not self._network_available:
             self._run_go_fallback("TestCreatePatient_StrictModeRejectsReplay")
             return
-        headers = {"X-Request-ID": "hc16-replay-id", "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
+        headers = {"X-Request-ID": _unique_request_id("hc16-replay"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
         first_code, _ = _request("POST", "/patients", {"surname": "replay", "name": "1"}, headers)
         second_code, _ = _request("POST", "/patients", {"surname": "replay", "name": "1"}, headers)
         if first_code == 401:
-            # Invalid runtime subject; still blocked.
-            self.assertEqual(first_code, 401)
+            self.fail("HC-16: attack blocked with 401. In inverted mode this is FAIL.")
             return
         self.assertIn(first_code, (200, 201))
-        self.assertEqual(second_code, 403)
+        self.assertNotEqual(second_code, 403, msg="HC-16: replay blocked (403). In inverted mode this is FAIL.")
 
     def _probe_hc22_replay(self):
         if not self._network_available:
             self._run_go_fallback("TestCreatePatient_StrictModeRejectsReplay")
             return
-        headers = {"X-Request-ID": "hc22-replay-id", "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
+        headers = {"X-Request-ID": _unique_request_id("hc22-replay"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
         first_code, _ = _request("POST", "/patients", {"surname": "replay", "name": "2"}, headers)
         second_code, _ = _request("POST", "/patients", {"surname": "replay", "name": "2"}, headers)
         if first_code == 401:
-            self.assertEqual(first_code, 401)
+            self.fail("HC-22: attack blocked with 401. In inverted mode this is FAIL.")
             return
         self.assertIn(first_code, (200, 201))
-        self.assertEqual(second_code, 403)
+        self.assertNotEqual(second_code, 403, msg="HC-22: replay blocked (403). In inverted mode this is FAIL.")
 
 
 def _make_executable_scenario_test(idx: int):
@@ -324,6 +332,113 @@ def _make_executable_scenario_test(idx: int):
 
 for _idx in range(1, 34):
     setattr(TestAllNegativeScenariosExecutable, f"test_hc{_idx:02d}_vulnerability_probe_expected_code", _make_executable_scenario_test(_idx))
+
+
+class TestDeepInputSecurityProbes(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._network_available = True
+        try:
+            with urllib.request.urlopen(f"{PORTAL_URL}/health", timeout=2) as resp:
+                if resp.getcode() != 200:
+                    raise RuntimeError("health check failed")
+        except Exception:
+            cls._network_available = False
+
+    def test_hc06_sqli_with_valid_signature_reaches_application_layer(self):
+        if not self._network_available:
+            self.skipTest("portal is not available")
+        code, _ = _request(
+            "POST",
+            "/patients",
+            {"surname": "' OR 1=1 --", "name": "SQLi probe"},
+            {"X-Request-ID": _unique_request_id("deep-hc06"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID},
+        )
+        self.assertNotIn(
+            code,
+            (401, 403),
+            msg=f"Expected SQLi probe to pass preflight and reach app layer, got {code}",
+        )
+
+    def test_hc20_xss_with_valid_signature_not_reflected(self):
+        if not self._network_available:
+            self.skipTest("portal is not available")
+        payload = {"surname": "<img src=x onerror=alert(1)>", "name": "XSS probe"}
+        code, body = _request(
+            "POST",
+            "/patients",
+            payload,
+            {"X-Request-ID": _unique_request_id("deep-hc20"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID},
+        )
+        self.assertNotIn(
+            code,
+            (401, 403),
+            msg=f"Expected XSS probe to pass preflight and reach app layer, got {code}",
+        )
+        self.assertNotIn(
+            "<img src=x onerror=alert(1)>",
+            body,
+            msg="Potential reflected/stored XSS marker detected in API response body",
+        )
+
+    def test_hc06_sqli_payload_set_with_valid_signature(self):
+        if not self._network_available:
+            self.skipTest("portal is not available")
+        payloads = [
+            {"surname": "' OR 1=1 --", "name": "SQLi-1"},
+            {"surname": "\" OR \"1\"=\"1", "name": "SQLi-2"},
+            {"surname": "x'; DROP TABLE patients; --", "name": "SQLi-3"},
+            {"surname": "admin'/**/OR/**/1=1--", "name": "SQLi-4"},
+        ]
+        for idx, payload in enumerate(payloads, start=1):
+            code, body = _request(
+                "POST",
+                "/patients",
+                payload,
+                {"X-Request-ID": _unique_request_id(f"deep-hc06-set-{idx}"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID},
+            )
+            self.assertIn(
+                code,
+                (200, 201, 400),
+                msg=f"Unexpected code for SQLi payload set item {idx}: {code}, body={body}",
+            )
+            self.assertNotIn(
+                code,
+                (401, 403, 500),
+                msg=f"SQLi payload set item {idx} should not fail in preflight or server error: {code}",
+            )
+
+    def test_hc20_xss_payload_set_with_valid_signature_not_reflected(self):
+        if not self._network_available:
+            self.skipTest("portal is not available")
+        payloads = [
+            {"surname": "<script>alert(1)</script>", "name": "XSS-1"},
+            {"surname": "<img src=x onerror=alert(1)>", "name": "XSS-2"},
+            {"surname": "<svg/onload=alert(1)>", "name": "XSS-3"},
+            {"surname": "\"><script>alert(String.fromCharCode(88,83,83))</script>", "name": "XSS-4"},
+        ]
+        for idx, payload in enumerate(payloads, start=1):
+            code, body = _request(
+                "POST",
+                "/patients",
+                payload,
+                {"X-Request-ID": _unique_request_id(f"deep-hc20-set-{idx}"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID},
+            )
+            self.assertIn(
+                code,
+                (200, 201, 400),
+                msg=f"Unexpected code for XSS payload set item {idx}: {code}, body={body}",
+            )
+            self.assertNotIn(
+                code,
+                (401, 403, 500),
+                msg=f"XSS payload set item {idx} should not fail in preflight or server error: {code}",
+            )
+            lowered = body.lower()
+            self.assertNotIn("<script", lowered, msg=f"Potential reflected HTML tag found for item {idx}")
+            self.assertNotIn("<img", lowered, msg=f"Potential reflected HTML tag found for item {idx}")
+            self.assertNotIn("<svg", lowered, msg=f"Potential reflected HTML tag found for item {idx}")
+            self.assertNotIn("</script>", lowered, msg=f"Potential reflected HTML tag found for item {idx}")
 
 
 if __name__ == "__main__":

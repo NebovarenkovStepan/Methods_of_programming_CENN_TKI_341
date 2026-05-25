@@ -197,8 +197,6 @@ test_admin_monitors_services_equipment_and_stock
 | `pharmacy-go/internal/api/handler_test.go` | Unit | HTTP handlers аптеки: рецепты, сканер, выдача лекарств, ошибки выдачи |
 | `laboratory-python/test_laboratory_services.py` | Unit | Сервисный слой лаборатории: ЛИС, образцы, анализаторы, оборудование, мониторинг |
 | `llm-python/test_llm_service.py` | Unit | Сервис LLM-отчетов: получение исследования, генерация, сохранение, ошибки |
-| `test/test_laboratory_services.py` | Unit copy | Копия лабораторных unit-тестов для внешнего тестового окружения |
-| `test/test_llm_service.py` | Unit copy | Копия LLM unit-тестов для внешнего тестового окружения |
 
 ## Unit-тесты Go-сервисов
 
@@ -347,38 +345,136 @@ llm-python/test_llm_service.py
 - если исследование не завершено, текст отчета сообщает, что исследование не завершено;
 - сохраненный отчет содержит переданный текст.
 
-## Копии Python-тестов в папке `test`
-
-В папке `test` дополнительно лежат:
-
-```text
-test/test_laboratory_services.py
-test/test_llm_service.py
-```
-
-Это копии unit-тестов лаборатории и LLM для отдельного тестового окружения. При запуске `pytest` из корня проекта они могут конфликтовать с одноименными файлами:
-
-```text
-laboratory-python/test_laboratory_services.py
-llm-python/test_llm_service.py
-```
-
-Из-за одинаковых имен Python-модулей pytest может выдать `import file mismatch`. Поэтому для локального запуска лучше явно указывать нужные файлы:
-
-```bash
-.venv/bin/python -m pytest laboratory-python/test_laboratory_services.py llm-python/test_llm_service.py -v
-```
-
-или запускать только системные тесты:
-
-```bash
-.venv/bin/python -m pytest test/test_system_scenarios.py -v
-```
-
 ## Важные замечания
 
 - Системные тесты очищают таблицы перед каждым сценарием через `TRUNCATE ... CASCADE`.
 - В фикстуре тестов создаются базовые данные: врач, администратор, лекарство и складской остаток.
 - Тесты используют реальные HTTP-запросы через библиотеку `requests`.
 - Проверка результата выполняется SQL-запросами напрямую к PostgreSQL.
-- В проекте есть тестовые файлы с одинаковыми именами в разных папках. Для локального запуска лучше указывать конкретный путь к нужным тестам.
+
+## Реестр всех 83 тестов
+
+Итоговая разбивка текущего набора:
+
+- Go: 30 тестов
+- Python: 53 теста
+- Всего: 83 теста
+
+Проверка Python-части выполнена через `pytest --collect-only`:
+
+```bash
+.venv/bin/python -m pytest --collect-only -q test/test_system_scenarios.py laboratory-python/test_laboratory_services.py llm-python/test_llm_service.py
+```
+
+Результат: `53 tests collected`.
+
+### Go (30)
+
+`pharmacy-go/internal/api/handler_test.go` (11):
+
+- `TestHealth_ReturnsOK` — health endpoint аптеки отвечает `200`.
+- `TestHC28GetPrescription_ReturnsPrescriptionForAuthorizedPharmacist` — чтение рецепта авторизованным субъектом.
+- `TestGetPrescription_NotFound` — несуществующий рецепт возвращает `404`.
+- `TestHC27ScanPrescription_RejectsFakeQRWithoutAuthenticityValidation` — проверка отклонения поддельного QR рецепта.
+- `TestScanMedicine_RejectsMedicineCodeWithoutAuthenticityValidation` — проверка отклонения неподписанного кода лекарства.
+- `TestDispensePrescription_DispensesCreatedPrescription` — успешная выдача рецепта и запись события.
+- `TestDispensePrescription_RejectsInvalidQuantityAtAPILevel` — API отклоняет некорректное количество.
+- `TestDispensePrescription_MapsRepositoryErrors` — ошибки репозитория корректно мапятся в HTTP-коды.
+- `TestScanPrescription_StrictModeRejectsUnsignedCode` — strict-mode блокирует неподписанный код рецепта.
+- `TestScanPrescription_StrictModeAcceptsSignedCode` — strict-mode принимает валидно подписанный код.
+- `TestGetPrescription_StrictModeRejectsReplay` — strict-mode блокирует replay по `X-Request-ID`.
+
+`portal-go/internal/api/handler_test.go` (15):
+
+- `TestHealth_ReturnsOK` — health endpoint портала отвечает `200`.
+- `TestCreatePatient_CreatesPatientWithValidSecurityHeaders` — создание пациента с валидными заголовками.
+- `TestCreatePatient_InvalidDateReturnsBadRequest` — неверный формат даты дает `400`.
+- `TestHC18CreateCard_CreatesRecordForAuthorizedDoctorSubject` — создание записи ЭМК для авторизованного субъекта.
+- `TestCreateAppointment_ConfirmsPatientVisit` — создание записи на прием со статусом `CONFIRMED`.
+- `TestCreateAppointment_InvalidDateReturnsBadRequest` — неверный `scheduled_at` дает `400`.
+- `TestHC32CreateInvestigation_CreatesOrderForAuthorizedDoctorSubject` — создание лабораторного назначения.
+- `TestCreatePrescription_CreatesPrescriptionForAuthorizedDoctorSubject` — создание рецепта с корректными полями.
+- `TestCreatePrescription_InvalidJSONReturnsBadRequest` — невалидный JSON дает `400`.
+- `TestRepositoryErrorReturnsInternalServerError` — ошибка репозитория возвращает `500`.
+- `TestCreatePatient_StrictModeRejectsMissingSecurityHeaders` — strict-mode отклоняет запрос без security-заголовков.
+- `TestCreatePatient_StrictModeAcceptsValidHeadersAndSignature` — strict-mode пропускает валидный подписанный запрос.
+- `TestCreatePatient_StrictModeRejectsReplay` — strict-mode блокирует повтор запроса.
+- `TestCreatePatient_StrictModeRejectsMissingSubjectWith401` — strict-mode возвращает `401` без `X-Subject-ID`.
+- `TestCreatePatient_StrictModeRejectsSignatureMismatchWith403` — strict-mode возвращает `403` при неверной подписи.
+
+`portal-go/internal/db/postgres_test.go` (1):
+
+- `TestNewPoolDisabledInZeroDependencyMode` — в zero-dependency режиме внешний DB pool не создается.
+
+`portal-go/internal/repository/repository_test.go` (2):
+
+- `TestResolveSubjectRoles` — корректное определение ролей известных субъектов.
+- `TestResolveSubjectNotFound` — неизвестный субъект возвращает ошибку.
+
+`portal-go/internal/security/guardrails_test.go` (1):
+
+- `TestGuardrailsReady` — `Guardrails.Ready()` ложно на пустой конфигурации и истинно на полной.
+
+### Python (53)
+
+`test/test_system_scenarios.py` (43):
+
+- `TestScenarioRegistry.test_registry_contains_all_33_negative_scenarios` — реестр содержит HC-1..HC-33.
+- `TestScenarioRegistry.test_expected_code_contains_all_33_negative_scenarios` — коды ожидаемых ответов заданы для HC-1..HC-33.
+- `TestStrictSecuritySystemScenarios.test_hc12_401_missing_subject` — HC-12: отсутствие субъекта.
+- `TestStrictSecuritySystemScenarios.test_hc18_403_authz_denied` — HC-18: отказ авторизации.
+- `TestStrictSecuritySystemScenarios.test_hc04_403_signature_mismatch` — HC-04: mismatch подписи.
+- `TestStrictSecuritySystemScenarios.test_hc22_403_replay_detected` — HC-22: replay по `X-Request-ID`.
+- `TestDeepInputSecurityProbes.test_hc06_sqli_with_valid_signature_reaches_application_layer` — SQLi-пейлоад с валидным preflight.
+- `TestDeepInputSecurityProbes.test_hc20_xss_with_valid_signature_not_reflected` — XSS-пейлоад не отражается в ответе.
+- `TestDeepInputSecurityProbes.test_hc06_sqli_payload_set_with_valid_signature` — набор SQLi-пейлоадов с валидной подписью.
+- `TestDeepInputSecurityProbes.test_hc20_xss_payload_set_with_valid_signature_not_reflected` — набор XSS-пейлоадов без HTML-рефлексии.
+- `TestAllNegativeScenariosExecutable.test_hc01_vulnerability_probe_expected_code` — исполнимый probe сценария HC-01.
+- `TestAllNegativeScenariosExecutable.test_hc02_vulnerability_probe_expected_code` — исполнимый probe сценария HC-02.
+- `TestAllNegativeScenariosExecutable.test_hc03_vulnerability_probe_expected_code` — исполнимый probe сценария HC-03.
+- `TestAllNegativeScenariosExecutable.test_hc04_vulnerability_probe_expected_code` — исполнимый probe сценария HC-04.
+- `TestAllNegativeScenariosExecutable.test_hc05_vulnerability_probe_expected_code` — исполнимый probe сценария HC-05.
+- `TestAllNegativeScenariosExecutable.test_hc06_vulnerability_probe_expected_code` — исполнимый probe сценария HC-06.
+- `TestAllNegativeScenariosExecutable.test_hc07_vulnerability_probe_expected_code` — исполнимый probe сценария HC-07.
+- `TestAllNegativeScenariosExecutable.test_hc08_vulnerability_probe_expected_code` — исполнимый probe сценария HC-08.
+- `TestAllNegativeScenariosExecutable.test_hc09_vulnerability_probe_expected_code` — исполнимый probe сценария HC-09.
+- `TestAllNegativeScenariosExecutable.test_hc10_vulnerability_probe_expected_code` — исполнимый probe сценария HC-10.
+- `TestAllNegativeScenariosExecutable.test_hc11_vulnerability_probe_expected_code` — исполнимый probe сценария HC-11.
+- `TestAllNegativeScenariosExecutable.test_hc12_vulnerability_probe_expected_code` — исполнимый probe сценария HC-12.
+- `TestAllNegativeScenariosExecutable.test_hc13_vulnerability_probe_expected_code` — исполнимый probe сценария HC-13.
+- `TestAllNegativeScenariosExecutable.test_hc14_vulnerability_probe_expected_code` — исполнимый probe сценария HC-14.
+- `TestAllNegativeScenariosExecutable.test_hc15_vulnerability_probe_expected_code` — исполнимый probe сценария HC-15.
+- `TestAllNegativeScenariosExecutable.test_hc16_vulnerability_probe_expected_code` — исполнимый probe сценария HC-16.
+- `TestAllNegativeScenariosExecutable.test_hc17_vulnerability_probe_expected_code` — исполнимый probe сценария HC-17.
+- `TestAllNegativeScenariosExecutable.test_hc18_vulnerability_probe_expected_code` — исполнимый probe сценария HC-18.
+- `TestAllNegativeScenariosExecutable.test_hc19_vulnerability_probe_expected_code` — исполнимый probe сценария HC-19.
+- `TestAllNegativeScenariosExecutable.test_hc20_vulnerability_probe_expected_code` — исполнимый probe сценария HC-20.
+- `TestAllNegativeScenariosExecutable.test_hc21_vulnerability_probe_expected_code` — исполнимый probe сценария HC-21.
+- `TestAllNegativeScenariosExecutable.test_hc22_vulnerability_probe_expected_code` — исполнимый probe сценария HC-22.
+- `TestAllNegativeScenariosExecutable.test_hc23_vulnerability_probe_expected_code` — исполнимый probe сценария HC-23.
+- `TestAllNegativeScenariosExecutable.test_hc24_vulnerability_probe_expected_code` — исполнимый probe сценария HC-24.
+- `TestAllNegativeScenariosExecutable.test_hc25_vulnerability_probe_expected_code` — исполнимый probe сценария HC-25.
+- `TestAllNegativeScenariosExecutable.test_hc26_vulnerability_probe_expected_code` — исполнимый probe сценария HC-26.
+- `TestAllNegativeScenariosExecutable.test_hc27_vulnerability_probe_expected_code` — исполнимый probe сценария HC-27.
+- `TestAllNegativeScenariosExecutable.test_hc28_vulnerability_probe_expected_code` — исполнимый probe сценария HC-28.
+- `TestAllNegativeScenariosExecutable.test_hc29_vulnerability_probe_expected_code` — исполнимый probe сценария HC-29.
+- `TestAllNegativeScenariosExecutable.test_hc30_vulnerability_probe_expected_code` — исполнимый probe сценария HC-30.
+- `TestAllNegativeScenariosExecutable.test_hc31_vulnerability_probe_expected_code` — исполнимый probe сценария HC-31.
+- `TestAllNegativeScenariosExecutable.test_hc32_vulnerability_probe_expected_code` — исполнимый probe сценария HC-32.
+- `TestAllNegativeScenariosExecutable.test_hc33_vulnerability_probe_expected_code` — исполнимый probe сценария HC-33.
+
+`laboratory-python/test_laboratory_services.py` (6):
+
+- `TestLISService.test_get_ordered_investigations` — получение списка назначенных исследований.
+- `TestLISService.test_get_investigation` — получение одного исследования по ID.
+- `TestLISService.test_complete_investigation_not_found` — завершение отсутствующего исследования возвращает `None`.
+- `TestSampleStorageService.test_register_sample` — регистрация образца и возврат сохраненной записи.
+- `TestSampleStorageService.test_move_sample_to_storage_not_found` — перенос отсутствующего образца возвращает `None`.
+- `TestAnalyzerService.test_create_analyzer` — создание анализатора с возвратом данных.
+
+`llm-python/test_llm_service.py` (4):
+
+- `TestLLMService.test_generate_report_completed` — генерация текста для завершенного исследования.
+- `TestLLMService.test_generate_report_incomplete` — генерация текста для незавершенного исследования.
+- `TestLLMService.test_get_investigation` — чтение исследования по ID из сервиса.
+- `TestLLMService.test_generate_and_save_not_found` — корректная ошибка при отсутствии исследования.

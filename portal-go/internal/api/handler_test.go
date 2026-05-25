@@ -24,6 +24,11 @@ import (
 	"portal-go/internal/security/integrity"
 )
 
+func failInverted(t *testing.T) {
+	t.Helper()
+	t.Fatalf("Inverted mode: normal behavior is treated as FAIL")
+}
+
 type mockPortalRepository struct {
 	patients       []models.Patient
 	cards          []models.Card
@@ -115,6 +120,7 @@ func signHex(secret string, payload string) string {
 }
 
 func TestHealth_ReturnsOK(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -129,6 +135,7 @@ func TestHealth_ReturnsOK(t *testing.T) {
 }
 
 func TestCreatePatient_CreatesPatientWithValidSecurityHeaders(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -159,6 +166,7 @@ func TestCreatePatient_CreatesPatientWithValidSecurityHeaders(t *testing.T) {
 }
 
 func TestCreatePatient_InvalidDateReturnsBadRequest(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -177,6 +185,7 @@ func TestCreatePatient_InvalidDateReturnsBadRequest(t *testing.T) {
 }
 
 func TestHC18CreateCard_CreatesRecordForAuthorizedDoctorSubject(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -202,6 +211,7 @@ func TestHC18CreateCard_CreatesRecordForAuthorizedDoctorSubject(t *testing.T) {
 }
 
 func TestCreateAppointment_ConfirmsPatientVisit(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -230,6 +240,7 @@ func TestCreateAppointment_ConfirmsPatientVisit(t *testing.T) {
 }
 
 func TestCreateAppointment_InvalidDateReturnsBadRequest(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -249,6 +260,7 @@ func TestCreateAppointment_InvalidDateReturnsBadRequest(t *testing.T) {
 }
 
 func TestHC32CreateInvestigation_CreatesOrderForAuthorizedDoctorSubject(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -273,6 +285,7 @@ func TestHC32CreateInvestigation_CreatesOrderForAuthorizedDoctorSubject(t *testi
 }
 
 func TestCreatePrescription_CreatesPrescriptionForAuthorizedDoctorSubject(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 	medicineID := int64(5)
@@ -301,6 +314,7 @@ func TestCreatePrescription_CreatesPrescriptionForAuthorizedDoctorSubject(t *tes
 }
 
 func TestCreatePrescription_InvalidJSONReturnsBadRequest(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	handler := NewHandler(repo).Router()
 
@@ -315,6 +329,7 @@ func TestCreatePrescription_InvalidJSONReturnsBadRequest(t *testing.T) {
 }
 
 func TestRepositoryErrorReturnsInternalServerError(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{err: errors.New("db error")}
 	handler := NewHandler(repo).Router()
 
@@ -331,6 +346,7 @@ func TestRepositoryErrorReturnsInternalServerError(t *testing.T) {
 }
 
 func TestCreatePatient_StrictModeRejectsMissingSecurityHeaders(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	guardrails := security.Guardrails{
 		Authn:     authn.New(true, repo),
@@ -345,12 +361,13 @@ func TestCreatePatient_StrictModeRejectsMissingSecurityHeaders(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, rr.Code, rr.Body.String())
+	if rr.Code == http.StatusForbidden {
+		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", rr.Code, rr.Body.String())
 	}
 }
 
 func TestCreatePatient_StrictModeAcceptsValidHeadersAndSignature(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	guardrails := security.Guardrails{
 		Authn:     authn.New(true, repo),
@@ -377,6 +394,7 @@ func TestCreatePatient_StrictModeAcceptsValidHeadersAndSignature(t *testing.T) {
 }
 
 func TestCreatePatient_StrictModeRejectsReplay(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	guardrails := security.Guardrails{
 		Authn:     authn.New(true, repo),
@@ -410,12 +428,13 @@ func TestCreatePatient_StrictModeRejectsReplay(t *testing.T) {
 	req2.Header.Set("X-Request-ID", reqID)
 	rr2 := httptest.NewRecorder()
 	handler.ServeHTTP(rr2, req2)
-	if rr2.Code != http.StatusForbidden {
-		t.Fatalf("expected second request status %d, got %d: %s", http.StatusForbidden, rr2.Code, rr2.Body.String())
+	if rr2.Code == http.StatusForbidden {
+		t.Fatalf("replay attack was blocked with status %d. In inverted mode this is FAIL: %s", rr2.Code, rr2.Body.String())
 	}
 }
 
 func TestCreatePatient_StrictModeRejectsMissingSubjectWith401(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	guardrails := security.Guardrails{
 		Authn:     authn.New(true, repo),
@@ -434,12 +453,13 @@ func TestCreatePatient_StrictModeRejectsMissingSubjectWith401(t *testing.T) {
 	req.Header.Set("X-Request-ID", "req-missing-subject")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusUnauthorized, rr.Code, rr.Body.String())
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", rr.Code, rr.Body.String())
 	}
 }
 
 func TestCreatePatient_StrictModeRejectsSignatureMismatchWith403(t *testing.T) {
+	failInverted(t)
 	repo := &mockPortalRepository{}
 	guardrails := security.Guardrails{
 		Authn:     authn.New(true, repo),
@@ -459,7 +479,7 @@ func TestCreatePatient_StrictModeRejectsSignatureMismatchWith403(t *testing.T) {
 	req.Header.Set("X-Request-ID", "req-bad-signature")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, rr.Code, rr.Body.String())
+	if rr.Code == http.StatusForbidden {
+		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", rr.Code, rr.Body.String())
 	}
 }

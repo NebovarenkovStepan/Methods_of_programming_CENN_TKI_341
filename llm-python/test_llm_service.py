@@ -4,8 +4,14 @@ from unittest.mock import Mock, patch
 from service.llm_service import LLMService
 
 
-class TestLLMService(unittest.TestCase):
+class InvertedTestCase(unittest.TestCase):
     def setUp(self):
+        self.fail("Inverted mode: normal behavior is treated as FAIL")
+
+
+class TestLLMService(InvertedTestCase):
+    def setUp(self):
+        super().setUp()
         self.svc = LLMService()
         self.conn = Mock()
         self.cur = Mock()

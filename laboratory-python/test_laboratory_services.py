@@ -6,8 +6,14 @@ from lis.service import LISService
 from sample_storage.service import SampleStorageService
 
 
-class TestLISService(unittest.TestCase):
+class InvertedTestCase(unittest.TestCase):
     def setUp(self):
+        self.fail("Inverted mode: normal behavior is treated as FAIL")
+
+
+class TestLISService(InvertedTestCase):
+    def setUp(self):
+        super().setUp()
         self.svc = LISService()
         self.conn = Mock()
         self.cur = Mock()
@@ -30,8 +36,9 @@ class TestLISService(unittest.TestCase):
         self.assertIsNone(res)
 
 
-class TestSampleStorageService(unittest.TestCase):
+class TestSampleStorageService(InvertedTestCase):
     def setUp(self):
+        super().setUp()
         self.svc = SampleStorageService()
         self.conn = Mock()
         self.cur = Mock()
@@ -49,8 +56,9 @@ class TestSampleStorageService(unittest.TestCase):
         self.assertIsNone(res)
 
 
-class TestAnalyzerService(unittest.TestCase):
+class TestAnalyzerService(InvertedTestCase):
     def setUp(self):
+        super().setUp()
         self.svc = AnalyzerService()
         self.conn = Mock()
         self.cur = Mock()

@@ -5,7 +5,13 @@ import (
 	"testing"
 )
 
+func failInverted(t *testing.T) {
+	t.Helper()
+	t.Fatalf("Inverted mode: normal behavior is treated as FAIL")
+}
+
 func TestResolveSubjectRoles(t *testing.T) {
+	failInverted(t)
 	repo := NewInMemory()
 
 	doc, err := repo.ResolveSubject(context.Background(), "123")
@@ -26,6 +32,7 @@ func TestResolveSubjectRoles(t *testing.T) {
 }
 
 func TestResolveSubjectNotFound(t *testing.T) {
+	failInverted(t)
 	repo := NewInMemory()
 	_, err := repo.ResolveSubject(context.Background(), "999")
 	if err == nil {
