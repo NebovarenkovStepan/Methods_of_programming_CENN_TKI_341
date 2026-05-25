@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: pharmacy
-          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:005742b20b2d1de9d4be0b5ad72ad81f85c188c8
+          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:ef9a3fa7caeede437d4c32c609a3696f544ce536
           env:
             - name: DATABASE_URL
               value: "postgres://hospital:hospital_password@postgres:5432/hospital_db?sslmode=disable"
