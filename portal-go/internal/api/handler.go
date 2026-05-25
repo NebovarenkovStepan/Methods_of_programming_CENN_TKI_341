@@ -97,6 +97,10 @@ func (h *Handler) CreatePatient(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if strings.TrimSpace(req.Surname) == "" || strings.TrimSpace(req.Name) == "" {
+		writeError(w, http.StatusBadRequest, "surname and name are required")
+		return
+	}
 
 	var dob *time.Time
 	if req.DateOfBirth != nil {
@@ -132,6 +136,10 @@ func (h *Handler) CreateCard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if req.PatientID <= 0 || req.EmployeeID <= 0 {
+		writeError(w, http.StatusBadRequest, "patient_id and employee_id must be greater than 0")
+		return
+	}
 	card, err := h.repo.CreateCard(ctx, models.Card{PatientID: req.PatientID, EmployeeID: req.EmployeeID, Complaints: req.Complaints, Notes: req.Notes})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -154,6 +162,14 @@ func (h *Handler) CreateAppointment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.PatientID <= 0 || req.EmployeeID <= 0 {
+		writeError(w, http.StatusBadRequest, "patient_id and employee_id must be greater than 0")
+		return
+	}
+	if strings.TrimSpace(req.ScheduledAt) == "" {
+		writeError(w, http.StatusBadRequest, "scheduled_at is required")
 		return
 	}
 	scheduledAt, err := time.Parse(time.RFC3339, req.ScheduledAt)
@@ -184,6 +200,14 @@ func (h *Handler) CreateInvestigation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if req.PatientID <= 0 || req.CardID <= 0 {
+		writeError(w, http.StatusBadRequest, "patient_id and card_id must be greater than 0")
+		return
+	}
+	if strings.TrimSpace(req.TestName) == "" {
+		writeError(w, http.StatusBadRequest, "test_name is required")
+		return
+	}
 	inv, err := h.repo.CreateInvestigation(ctx, models.LaboratoryInvestigation{PatientID: req.PatientID, CardID: req.CardID, TestName: req.TestName})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -208,6 +232,18 @@ func (h *Handler) CreatePrescription(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.PatientID <= 0 || req.EmployeeID <= 0 || req.CardID <= 0 {
+		writeError(w, http.StatusBadRequest, "patient_id, employee_id and card_id must be greater than 0")
+		return
+	}
+	if req.MedicineID == nil || *req.MedicineID <= 0 {
+		writeError(w, http.StatusBadRequest, "medicine_id must be greater than 0")
+		return
+	}
+	if strings.TrimSpace(req.MedicineName) == "" || strings.TrimSpace(req.DosageInstructions) == "" {
+		writeError(w, http.StatusBadRequest, "medicine_name and dosage_instructions are required")
 		return
 	}
 	prescription, err := h.repo.CreatePrescription(ctx, models.Prescription{PatientID: req.PatientID, EmployeeID: req.EmployeeID, CardID: req.CardID, MedicineID: req.MedicineID, MedicineName: req.MedicineName, DosageInstructions: req.DosageInstructions})

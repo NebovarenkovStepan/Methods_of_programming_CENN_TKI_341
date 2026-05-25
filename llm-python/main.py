@@ -61,6 +61,26 @@ def resolve_subject_from_db(subject_id: str):
         return Subject(id=subject_id, roles=[_role_from_speciality(speciality)])
 
 
+def resolve_patient_id_for_subject(subject_id: str) -> int | None:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT patient_id FROM users WHERE id = ?", (int(subject_id),))
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError("subject not found")
+        return row[0]
+
+
+def get_investigation_patient_id(investigation_id: int) -> int | None:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT patient_id FROM laboratory_investigations WHERE id = ?", (investigation_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return row[0]
+
+
 def write_audit_to_db(event: AuditEvent):
     with get_connection() as conn:
         cur = conn.cursor()
@@ -103,6 +123,18 @@ def _preflight(handler: BaseHTTPRequestHandler, action_name: str, resource: str,
     authz_service.authorize(subject, action)
     integrity_service.verify_payload(body or b"{}", headers.get("x-signature", ""))
     audit_service.write_event(AuditEvent(service="llm", action=action_name, result="allow", details=f"subject={subject.id}"))
+    return subject
+
+
+def _enforce_patient_owns_investigation(subject: Subject, investigation_id: int):
+    if "patient" not in subject.roles:
+        return
+    subject_patient_id = resolve_patient_id_for_subject(subject.id)
+    investigation_patient_id = get_investigation_patient_id(investigation_id)
+    if subject_patient_id is None or investigation_patient_id is None:
+        raise PermissionError("patient identity verification failed")
+    if subject_patient_id != investigation_patient_id:
+        raise PermissionError("patient identity verification failed")
 
 
 class LLMHandler(BaseHTTPRequestHandler):
@@ -114,7 +146,8 @@ class LLMHandler(BaseHTTPRequestHandler):
             if parsed.path.startswith("/reports/"):
                 inv_id = int(parsed.path.split("/")[-1])
                 body = b"{}"
-                _preflight(self, ACTION_READ_REPORTS, "reports", body, investigation_id=inv_id)
+                subject = _preflight(self, ACTION_READ_REPORTS, "reports", body, investigation_id=inv_id)
+                _enforce_patient_owns_investigation(subject, inv_id)
                 input_guard_service.validate_investigation_payload({"investigation_id": inv_id})
                 with get_connection() as conn:
                     cur = conn.cursor()
@@ -142,7 +175,8 @@ class LLMHandler(BaseHTTPRequestHandler):
             if parsed.path == "/generate":
                 payload = json.loads(body.decode("utf-8")) if body else {}
                 inv_id = payload.get("investigation_id")
-                _preflight(self, ACTION_GENERATE_REPORT, "reports", body, investigation_id=inv_id)
+                subject = _preflight(self, ACTION_GENERATE_REPORT, "reports", body, investigation_id=inv_id)
+                _enforce_patient_owns_investigation(subject, inv_id)
                 input_guard_service.validate_investigation_payload({"investigation_id": inv_id})
                 with get_connection() as conn:
                     report, err = llm_service.generate_and_save(conn, inv_id)

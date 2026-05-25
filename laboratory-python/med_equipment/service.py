@@ -1,6 +1,15 @@
 from db import fetch_one
 
 
+ALLOWED_LAB_ROLES = {"lab_tech", "doctor", "admin"}
+
+
+def _require_authorized_role(conn):
+    role = getattr(conn, "caller_role", None)
+    if role not in ALLOWED_LAB_ROLES:
+        raise PermissionError("caller is not authorized for laboratory operations")
+
+
 class MedicalEquipmentService:
     def create_equipment(
         self,
@@ -9,6 +18,7 @@ class MedicalEquipmentService:
         equipment_type: str,
         location: str | None = None,
     ) -> dict:
+        _require_authorized_role(conn)
         cur = conn.cursor()
         cur.execute(
             """

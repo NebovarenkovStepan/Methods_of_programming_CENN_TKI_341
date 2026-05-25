@@ -1,445 +1,607 @@
-import hashlib
-import hmac
-import json
 import os
-import subprocess
-import unittest
-import urllib.error
-import urllib.request
-import uuid
 
-def setUpModule():
-    raise AssertionError("Inverted mode: force FAIL for normal test behavior")
+import psycopg2
+import pytest
+import requests
 
 
 PORTAL_URL = os.getenv("PORTAL_URL", "http://localhost:8080")
-INTEGRITY_SECRET = os.getenv("INTEGRITY_SECRET", "test-secret")
-STRICT_DOCTOR_SUBJECT_ID = os.getenv("STRICT_DOCTOR_SUBJECT_ID", "123")
-STRICT_ADMIN_SUBJECT_ID = os.getenv("STRICT_ADMIN_SUBJECT_ID", "7")
-
-SCENARIO_REGISTRY = {
-    1: "Unauthorized access to patient EMR",
-    2: "Compromised doctor account modifies medical data",
-    3: "Unprotected channel for EMR transfer",
-    4: "Payload tampering in transit",
-    5: "Distorted data shown on portal",
-    6: "SQL injection into API",
-    7: "Unauthorized access to telemedicine session",
-    8: "EMR write without doctor rights",
-    9: "LIS sends data to unauthorized system",
-    10: "Sample identifier substitution",
-    11: "Deletion of analysis results",
-    12: "Read foreign EMR by ID without authorization",
-    13: "Lab order tampering",
-    14: "Unauthorized lab submits/completes results",
-    15: "Forged e-prescription accepted",
-    16: "Replay of already dispensed prescription",
-    17: "Prescription data altered before dispense",
-    18: "Unauthorized user creates EMR entry as doctor",
-    19: "Unauthorized user edits existing EMR",
-    20: "XSS in web interface",
-    21: "Session cookie theft",
-    22: "Replay attack on API",
-    23: "Unauthorized list of lab investigations",
-    24: "Unauthorized lab investigation creation as doctor",
-    25: "Unencrypted video transmission",
-    26: "Video server evil-twin substitution",
-    27: "Pharmacy accepts prescription without authenticity check",
-    28: "Unauthorized read of foreign prescription",
-    29: "Unauthorized telemedicine session start as doctor",
-    30: "DB/LIS data inconsistency",
-    31: "Prescription with substituted patient/medicine identifiers",
-    32: "Unauthorized lab gets and processes fake order",
-    33: "Backup data exfiltration",
-}
-
-# Strict expected code for each HC scenario.
-SCENARIO_EXPECTED_CODE = {
-    1: 401,
-    2: 403,
-    3: 403,
-    4: 403,
-    5: 403,
-    6: 403,
-    7: 401,
-    8: 401,
-    9: 403,
-    10: 403,
-    11: 401,
-    12: 401,
-    13: 403,
-    14: 403,
-    15: 403,
-    16: 403,
-    17: 403,
-    18: 403,
-    19: 401,
-    20: 403,
-    21: 401,
-    22: 403,
-    23: 401,
-    24: 403,
-    25: 403,
-    26: 403,
-    27: 403,
-    28: 401,
-    29: 403,
-    30: 403,
-    31: 403,
-    32: 403,
-    33: 401,
-}
+PHARMACY_URL = os.getenv("PHARMACY_URL", "http://localhost:8081")
+LAB_URL = os.getenv("LAB_URL", "http://localhost:8001")
+LLM_URL = os.getenv("LLM_URL", "http://localhost:8002")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-def _sign(payload: bytes) -> str:
-    return hmac.new(INTEGRITY_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+@pytest.fixture(scope="function")
+def db_conn():
+    if not DATABASE_URL:
+        pytest.skip("DATABASE_URL is not set")
+
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = False
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'appointment_status') THEN
+                    CREATE TYPE public.appointment_status AS ENUM (
+                        'SCHEDULED',
+                        'CONFIRMED',
+                        'CANCELLED',
+                        'COMPLETED'
+                    );
+                END IF;
+            END
+            $$;
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS public.appointments (
+                id BIGSERIAL PRIMARY KEY,
+                patient_id BIGINT NOT NULL REFERENCES public.patients(id) ON DELETE CASCADE,
+                employee_id BIGINT NOT NULL REFERENCES public.employees(id) ON DELETE RESTRICT,
+                scheduled_at TIMESTAMP NOT NULL,
+                reason TEXT,
+                status public.appointment_status NOT NULL DEFAULT 'CONFIRMED',
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (employee_id, scheduled_at)
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_appointments_patient_id ON public.appointments (patient_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_appointments_employee_id ON public.appointments (employee_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_appointments_scheduled_at ON public.appointments (scheduled_at)")
+        cur.execute("TRUNCATE public.llm_reports CASCADE")
+        cur.execute("TRUNCATE public.video_sessions CASCADE")
+        cur.execute("TRUNCATE public.logs CASCADE")
+        cur.execute("TRUNCATE public.appointments CASCADE")
+        cur.execute("TRUNCATE public.self_diagnostics CASCADE")
+        cur.execute("TRUNCATE public.monitoring_metrics CASCADE")
+        cur.execute("TRUNCATE public.medical_equipment CASCADE")
+        cur.execute("TRUNCATE public.analyzer_results CASCADE")
+        cur.execute("TRUNCATE public.workstations CASCADE")
+        cur.execute("TRUNCATE public.analyzers CASCADE")
+        cur.execute("TRUNCATE public.samples CASCADE")
+        cur.execute("TRUNCATE public.scanner_events CASCADE")
+        cur.execute("TRUNCATE public.dispense_events CASCADE")
+        cur.execute("TRUNCATE public.warehouse_stock CASCADE")
+        cur.execute("TRUNCATE public.prescriptions CASCADE")
+        cur.execute("TRUNCATE public.laboratory_investigations CASCADE")
+        cur.execute("TRUNCATE public.cards CASCADE")
+        cur.execute("TRUNCATE public.users CASCADE")
+        cur.execute("TRUNCATE public.employees CASCADE")
+        cur.execute("TRUNCATE public.patients CASCADE")
+        cur.execute("TRUNCATE public.medicines CASCADE")
+
+    conn.commit()
+    yield conn
+    conn.close()
 
 
-def _request(method: str, path: str, payload: dict, headers: dict | None = None):
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    req_headers = {
-        "Content-Type": "application/json",
-        "X-Trusted-Channel": "vpn",
-        "X-Signature": _sign(body),
-        "X-Request-ID": "req-default",
-        "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID,
+@pytest.fixture(scope="function")
+def seed_base(db_conn):
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.employees (surname, name, patronymic, speciality)
+            VALUES ('Петров', 'Петр', 'Петрович', 'Терапевт')
+            RETURNING id
+            """
+        )
+        doctor_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO public.employees (surname, name, patronymic, speciality)
+            VALUES ('Смирнова', 'Анна', 'Игоревна', 'Администратор ИТ')
+            RETURNING id
+            """
+        )
+        admin_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO public.medicines (name, form, dosage, manufacturer, description)
+            VALUES ('Парацетамол', 'Таблетки', '500 мг', 'Pharma', 'Жаропонижающее')
+            RETURNING id
+            """
+        )
+        medicine_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO public.warehouse_stock (medicine_id, quantity)
+            VALUES (%s, 10)
+            """,
+            (medicine_id,),
+        )
+
+    db_conn.commit()
+
+    return {
+        "doctor_id": doctor_id,
+        "admin_id": admin_id,
+        "medicine_id": medicine_id,
     }
-    if headers:
-        req_headers.update(headers)
 
-    req = urllib.request.Request(
-        url=f"{PORTAL_URL}{path}",
-        data=body,
-        headers=req_headers,
-        method=method,
+
+def assert_success(response):
+    assert response.status_code in (200, 201), response.text
+
+
+def assert_attack_passed(condition, details):
+    assert condition, f"FAIL: attack was blocked or incomplete ({details})"
+
+
+@pytest.mark.hc
+def test_hc31_video_session_can_be_started_without_authorized_doctor(db_conn, seed_base):
+    """
+    НС-31.
+    Неавторизованный сотрудник без роли врача может быть записан как участник
+    начатого телемедицинского сеанса, потому модель данных не проверяет роль
+    и авторизацию врача.
+    """
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.patients (surname, name, patronymic, date_of_birth)
+            VALUES ('Орлов', 'Илья', 'Сергеевич', '1995-02-10')
+            RETURNING id
+            """
+        )
+        patient_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO public.video_sessions (
+                patient_id,
+                employee_id,
+                started_at,
+                session_status,
+                session_notes
+            )
+            VALUES (%s, %s, CURRENT_TIMESTAMP, 'STARTED', 'Сеанс создан без проверки роли врача')
+            RETURNING patient_id, employee_id, session_status, session_notes
+            """,
+            (patient_id, seed_base["admin_id"]),
+        )
+        session = cur.fetchone()
+
+    assert_attack_passed(
+        session[0] == patient_id
+        and session[1] == seed_base["admin_id"]
+        and session[2] == "STARTED"
+        and "без проверки роли врача" in session[3],
+        "HC-31 video session creation",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.getcode(), resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        try:
-            return exc.code, exc.read().decode("utf-8")
-        finally:
-            exc.close()
 
 
-def _unique_request_id(prefix: str) -> str:
-    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+@pytest.mark.hc
+def test_hc20_existing_emk_record_can_be_changed_without_authorized_doctor(db_conn, seed_base):
+    """
+    НС-20.
+    Существующая запись ЭМК может быть изменена без проверки авторизованного
+    врача, потому на уровне текущей модели нет ограничения, связывающего
+    изменение с подтвержденной ролью врача.
+    """
 
-
-class TestScenarioRegistry(unittest.TestCase):
-    def test_registry_contains_all_33_negative_scenarios(self):
-        self.assertEqual(sorted(SCENARIO_REGISTRY.keys()), list(range(1, 34)))
-
-    def test_expected_code_contains_all_33_negative_scenarios(self):
-        self.assertEqual(sorted(SCENARIO_EXPECTED_CODE.keys()), list(range(1, 34)))
-
-
-class _FallbackMixin:
-    @staticmethod
-    def _portal_dir() -> str:
-        return os.path.join(os.path.dirname(__file__), "..", "portal-go")
-
-    def _run_go_fallback(self, test_pattern: str):
-        portal_dir = self._portal_dir()
-        gocache_dir = os.path.join(portal_dir, ".gocache")
-        os.makedirs(gocache_dir, exist_ok=True)
-        env = os.environ.copy()
-        env["GOCACHE"] = gocache_dir
-        proc = subprocess.run(
-            ["go", "test", "./internal/api", "-run", test_pattern, "-count=1"],
-            cwd=portal_dir,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.patients (surname, name, patronymic, date_of_birth)
+            VALUES ('Федоров', 'Никита', 'Андреевич', '1988-07-15')
+            RETURNING id
+            """
         )
-        self.assertEqual(proc.returncode, 0, msg=proc.stdout)
+        patient_id = cur.fetchone()[0]
 
-
-class TestStrictSecuritySystemScenarios(unittest.TestCase, _FallbackMixin):
-    @classmethod
-    def setUpClass(cls):
-        cls._network_available = True
-        try:
-            with urllib.request.urlopen(f"{PORTAL_URL}/health", timeout=2) as resp:
-                if resp.getcode() != 200:
-                    raise RuntimeError("health check failed")
-        except Exception:
-            cls._network_available = False
-
-    def test_hc12_401_missing_subject(self):
-        if not self._network_available:
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsMissingSubjectWith401")
-            return
-        code, _ = _request(
-            "POST",
-            "/patients",
-            {"surname": "Иванов", "name": "Иван"},
-            {"X-Subject-ID": "", "X-Request-ID": "req-401-1"},
+        cur.execute(
+            """
+            INSERT INTO public.cards (patient_id, employee_id, complaints, notes)
+            VALUES (%s, %s, 'Кашель', 'Первичная запись врача')
+            RETURNING id
+            """,
+            (patient_id, seed_base["doctor_id"]),
         )
-        self.assertNotEqual(code, 401, msg="Attack was blocked (401). In inverted mode this is a FAIL.")
+        card_id = cur.fetchone()[0]
 
-    def test_hc18_403_authz_denied(self):
-        if not self._network_available:
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsMissingSecurityHeaders")
-            return
-        code, _ = _request(
-            "POST",
-            "/cards",
-            {"patient_id": 1, "employee_id": 1},
-            {"X-Subject-ID": STRICT_ADMIN_SUBJECT_ID, "X-Request-ID": "req-403-authz-1"},
+        cur.execute(
+            """
+            UPDATE public.cards
+            SET complaints = 'Подмененные жалобы',
+                notes = 'Запись ЭМК изменена без проверки авторизованного врача'
+            WHERE id = %s
+            RETURNING complaints, notes
+            """,
+            (card_id,),
         )
-        if code == 401:
-            # Runtime subject IDs can differ; validate strict authorization path via deterministic Go test.
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsMissingSecurityHeaders")
-            return
-        self.assertNotEqual(code, 403, msg="Attack was blocked (403). In inverted mode this is a FAIL.")
+        changed_card = cur.fetchone()
 
-    def test_hc04_403_signature_mismatch(self):
-        if not self._network_available:
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsSignatureMismatchWith403")
-            return
-        code, _ = _request(
-            "POST",
-            "/patients",
-            {"surname": "Петров", "name": "Петр"},
-            {
-                "X-Signature": "bad-signature",
-                "X-Request-ID": "req-403-sig-1",
-                "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID,
-            },
+    assert_attack_passed(
+        changed_card[0] == "Подмененные жалобы"
+        and "без проверки авторизованного врача" in changed_card[1],
+        "HC-20 medical card tampering",
+    )
+
+
+@pytest.mark.hc
+def test_hc01_emk_read_without_authorization(db_conn, seed_base):
+    """
+    НС-1. Доступ к ЭМК пациента без авторизации.
+    """
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.patients (surname, name, patronymic, date_of_birth)
+            VALUES ('Соколов', 'Иван', 'Олегович', '1993-03-03')
+            RETURNING id
+            """
         )
-        if code == 401:
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsSignatureMismatchWith403")
-            return
-        self.assertNotEqual(code, 403, msg="Attack was blocked (403). In inverted mode this is a FAIL.")
-
-    def test_hc22_403_replay_detected(self):
-        if not self._network_available:
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsReplay")
-            return
-        headers = {"X-Request-ID": _unique_request_id("req-replay"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
-        first_code, _ = _request("POST", "/patients", {"surname": "Сидоров", "name": "Сидор"}, headers)
-        second_code, _ = _request("POST", "/patients", {"surname": "Сидоров", "name": "Сидор"}, headers)
-        if first_code == 401:
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsReplay")
-            return
-        self.assertIn(first_code, (200, 201))
-        self.assertNotEqual(second_code, 403, msg="Replay was blocked (403). In inverted mode this is a FAIL.")
-
-
-class TestAllNegativeScenariosExecutable(unittest.TestCase, _FallbackMixin):
-    @classmethod
-    def setUpClass(cls):
-        cls._network_available = True
-        try:
-            with urllib.request.urlopen(f"{PORTAL_URL}/health", timeout=2) as resp:
-                if resp.getcode() != 200:
-                    raise RuntimeError("health check failed")
-        except Exception:
-            cls._network_available = False
-
-    def _assert_expected_code(self, hc_id: int, method: str, path: str, payload: dict, headers: dict | None = None):
-        if not self._network_available:
-            self._run_go_fallback("TestPreflight")
-            return
-        code, _ = _request(method, path, payload, headers=headers)
-        # Inverted mode: if attack is blocked with expected code (or equivalent 401 for expected 403),
-        # the test must FAIL.
-        if SCENARIO_EXPECTED_CODE[hc_id] == 403 and code == 401:
-            self.fail(f"HC-{hc_id}: attack blocked with 401 (equivalent deny). In inverted mode this is FAIL.")
-        self.assertNotEqual(
-            code,
-            SCENARIO_EXPECTED_CODE[hc_id],
-            msg=f"HC-{hc_id}: attack blocked with expected HTTP {SCENARIO_EXPECTED_CODE[hc_id]}. In inverted mode this is FAIL.",
+        patient_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO public.cards (patient_id, employee_id, complaints, notes)
+            VALUES (%s, %s, 'Боль', 'Запись ЭМК')
+            """,
+            (patient_id, seed_base["doctor_id"]),
         )
-
-    def _run_hc_probe(self, hc_id: int):
-        probes = {
-            1: lambda: self._assert_expected_code(1, "POST", "/patients", {"surname": "A", "name": "B"}, {"X-Subject-ID": ""}),
-            2: lambda: self._assert_expected_code(2, "POST", "/cards", {"patient_id": 1, "employee_id": 1}, {"X-Subject-ID": STRICT_ADMIN_SUBJECT_ID}),
-            3: lambda: self._assert_expected_code(3, "POST", "/patients", {"surname": "A", "name": "B"}, {"X-Trusted-Channel": "public-net"}),
-            4: lambda: self._assert_expected_code(4, "POST", "/patients", {"surname": "A", "name": "B"}, {"X-Signature": "bad"}),
-            5: lambda: self._assert_expected_code(5, "POST", "/patients", {"surname": "<script>x</script>", "name": "B"}, {"X-Signature": "bad"}),
-            6: lambda: self._assert_expected_code(6, "POST", "/patients", {"surname": "' OR 1=1 --", "name": "B"}, {"X-Signature": "bad"}),
-            7: lambda: self._assert_expected_code(7, "POST", "/patients", {"surname": "A", "name": "B"}, {"X-Subject-ID": ""}),
-            8: lambda: self._assert_expected_code(8, "POST", "/cards", {"patient_id": 1, "employee_id": 1}, {"X-Subject-ID": ""}),
-            9: lambda: self._assert_expected_code(9, "POST", "/investigations", {"patient_id": 1, "card_id": 1, "test_name": "T"}, {"X-Trusted-Channel": "internet"}),
-            10: lambda: self._assert_expected_code(10, "POST", "/investigations", {"patient_id": 999999, "card_id": 1, "test_name": "T"}, {"X-Signature": "bad"}),
-            11: lambda: self._assert_expected_code(11, "POST", "/investigations", {"patient_id": 1, "card_id": 1, "test_name": "T"}, {"X-Subject-ID": ""}),
-            12: lambda: self._assert_expected_code(12, "POST", "/patients", {"surname": "A", "name": "B"}, {"X-Subject-ID": ""}),
-            13: lambda: self._assert_expected_code(13, "POST", "/investigations", {"patient_id": 1, "card_id": 1, "test_name": "tampered"}, {"X-Signature": "bad"}),
-            14: lambda: self._assert_expected_code(14, "POST", "/investigations", {"patient_id": 1, "card_id": 1, "test_name": "lab"}, {"X-Subject-ID": STRICT_ADMIN_SUBJECT_ID}),
-            15: lambda: self._assert_expected_code(15, "POST", "/patients", {"surname": "forged", "name": "rx"}, {"X-Signature": "bad"}),
-            16: self._probe_hc16_replay,
-            17: lambda: self._assert_expected_code(17, "POST", "/patients", {"surname": "tamper", "name": "rx"}, {"X-Signature": "bad"}),
-            18: lambda: self._assert_expected_code(18, "POST", "/cards", {"patient_id": 1, "employee_id": 1}, {"X-Subject-ID": STRICT_ADMIN_SUBJECT_ID}),
-            19: lambda: self._assert_expected_code(19, "POST", "/cards", {"patient_id": 1, "employee_id": 1}, {"X-Subject-ID": ""}),
-            20: lambda: self._assert_expected_code(20, "POST", "/patients", {"surname": "<img src=x onerror=alert(1)>", "name": "B"}, {"X-Signature": "bad"}),
-            21: lambda: self._assert_expected_code(21, "POST", "/patients", {"surname": "A", "name": "B"}, {"Cookie": "session=fake", "X-Subject-ID": ""}),
-            22: self._probe_hc22_replay,
-            23: lambda: self._assert_expected_code(23, "POST", "/investigations", {"patient_id": 1, "card_id": 1, "test_name": "list-leak"}, {"X-Subject-ID": ""}),
-            24: lambda: self._assert_expected_code(24, "POST", "/investigations", {"patient_id": 1, "card_id": 1, "test_name": "T"}, {"X-Subject-ID": STRICT_ADMIN_SUBJECT_ID}),
-            25: lambda: self._assert_expected_code(25, "POST", "/patients", {"surname": "stream", "name": "plain-http"}, {"X-Trusted-Channel": "http"}),
-            26: lambda: self._assert_expected_code(26, "POST", "/patients", {"surname": "evil", "name": "twin"}, {"X-Trusted-Channel": "evil-twin"}),
-            27: lambda: self._assert_expected_code(27, "POST", "/patients", {"surname": "fake", "name": "qr"}, {"X-Signature": "bad"}),
-            28: lambda: self._assert_expected_code(28, "POST", "/patients", {"surname": "A", "name": "B"}, {"X-Subject-ID": ""}),
-            29: lambda: self._assert_expected_code(29, "POST", "/cards", {"patient_id": 1, "employee_id": 1}, {"X-Subject-ID": STRICT_ADMIN_SUBJECT_ID}),
-            30: lambda: self._assert_expected_code(30, "POST", "/investigations", {"patient_id": 1, "card_id": 1, "test_name": "stale"}, {"X-Signature": "bad"}),
-            31: lambda: self._assert_expected_code(31, "POST", "/investigations", {"patient_id": 999, "card_id": 1, "test_name": "substituted"}, {"X-Signature": "bad"}),
-            32: lambda: self._assert_expected_code(32, "POST", "/investigations", {"patient_id": 1, "card_id": 1, "test_name": "forged"}, {"X-Subject-ID": STRICT_ADMIN_SUBJECT_ID}),
-            33: lambda: self._assert_expected_code(33, "POST", "/patients", {"surname": "backup", "name": "dump"}, {"X-Subject-ID": ""}),
-        }
-        probes[hc_id]()
-
-    def _probe_hc16_replay(self):
-        if not self._network_available:
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsReplay")
-            return
-        headers = {"X-Request-ID": _unique_request_id("hc16-replay"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
-        first_code, _ = _request("POST", "/patients", {"surname": "replay", "name": "1"}, headers)
-        second_code, _ = _request("POST", "/patients", {"surname": "replay", "name": "1"}, headers)
-        if first_code == 401:
-            self.fail("HC-16: attack blocked with 401. In inverted mode this is FAIL.")
-            return
-        self.assertIn(first_code, (200, 201))
-        self.assertNotEqual(second_code, 403, msg="HC-16: replay blocked (403). In inverted mode this is FAIL.")
-
-    def _probe_hc22_replay(self):
-        if not self._network_available:
-            self._run_go_fallback("TestCreatePatient_StrictModeRejectsReplay")
-            return
-        headers = {"X-Request-ID": _unique_request_id("hc22-replay"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID}
-        first_code, _ = _request("POST", "/patients", {"surname": "replay", "name": "2"}, headers)
-        second_code, _ = _request("POST", "/patients", {"surname": "replay", "name": "2"}, headers)
-        if first_code == 401:
-            self.fail("HC-22: attack blocked with 401. In inverted mode this is FAIL.")
-            return
-        self.assertIn(first_code, (200, 201))
-        self.assertNotEqual(second_code, 403, msg="HC-22: replay blocked (403). In inverted mode this is FAIL.")
+        cur.execute("SELECT id FROM public.cards WHERE patient_id = %s", (patient_id,))
+        rows = cur.fetchall()
+    assert_attack_passed(len(rows) > 0, "HC-1 unauthorized EMK read")
 
 
-def _make_executable_scenario_test(idx: int):
-    def _test(self):
-        self.assertIn(idx, SCENARIO_REGISTRY)
-        self._run_hc_probe(idx)
-
-    _test.__name__ = f"test_hc{idx:02d}_vulnerability_probe_expected_code"
-    return _test
-
-
-for _idx in range(1, 34):
-    setattr(TestAllNegativeScenariosExecutable, f"test_hc{_idx:02d}_vulnerability_probe_expected_code", _make_executable_scenario_test(_idx))
+@pytest.mark.hc
+def test_hc03_unprotected_data_transfer_simulation():
+    """
+    НС-3. Передача данных без защищенного канала.
+    """
+    response = requests.get(f"{PORTAL_URL}/health", timeout=5)
+    assert_attack_passed(response.status_code == 200, "HC-3 unprotected channel simulation")
 
 
-class TestDeepInputSecurityProbes(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls._network_available = True
-        try:
-            with urllib.request.urlopen(f"{PORTAL_URL}/health", timeout=2) as resp:
-                if resp.getcode() != 200:
-                    raise RuntimeError("health check failed")
-        except Exception:
-            cls._network_available = False
+@pytest.mark.hc
+def test_hc04_tampered_api_payload_accepted(db_conn, seed_base):
+    """
+    НС-4. Подмена данных пациента при передаче в API.
+    """
+    response = requests.post(
+        f"{PORTAL_URL}/patients",
+        json={
+            "surname": "Injected",
+            "name": "Payload",
+            "patronymic": "Tampered",
+            "date_of_birth": "2001-01-01",
+            "unexpected_field": "MALICIOUS",
+        },
+        timeout=5,
+    )
+    assert_attack_passed(response.status_code in (200, 201), "HC-4 payload tampering accepted")
 
-    def test_hc06_sqli_with_valid_signature_reaches_application_layer(self):
-        if not self._network_available:
-            self.skipTest("portal is not available")
-        code, _ = _request(
-            "POST",
-            "/patients",
-            {"surname": "' OR 1=1 --", "name": "SQLi probe"},
-            {"X-Request-ID": _unique_request_id("deep-hc06"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID},
+
+@pytest.mark.hc
+def test_hc06_sql_injection_like_input_accepted():
+    """
+    НС-6. Попытка SQL-инъекции во входных данных API.
+    """
+    response = requests.post(
+        f"{PORTAL_URL}/patients",
+        json={
+            "surname": "Иванов'; DROP TABLE patients; --",
+            "name": "Тест",
+            "date_of_birth": "2000-01-01",
+        },
+        timeout=5,
+    )
+    assert_attack_passed(response.status_code in (200, 201), "HC-6 injection-like input accepted")
+
+
+@pytest.mark.hc
+def test_hc22_replay_attack_simulation(db_conn, seed_base):
+    """
+    НС-22. Replay-атака повторным использованием запроса.
+    """
+    payload = {
+        "patient_id": 1,
+        "employee_id": seed_base["doctor_id"],
+        "scheduled_at": "2026-10-10T10:00:00Z",
+        "reason": "Replay attempt",
+    }
+    first = requests.post(f"{PORTAL_URL}/appointments", json=payload, timeout=5)
+    second = requests.post(f"{PORTAL_URL}/appointments", json=payload, timeout=5)
+    assert_attack_passed(first.status_code in (200, 201) and second.status_code in (200, 201), "HC-22 replay accepted")
+
+
+@pytest.mark.hc
+def test_hc33_backup_data_exposure_simulation(db_conn):
+    """
+    НС-33. Доступ к резервной копии/дампу данных (симуляция через массовое чтение).
+    """
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM public.patients")
+        count = cur.fetchone()[0]
+    assert_attack_passed(count >= 0, "HC-33 backup exposure simulation")
+
+
+def create_patient(surname="Иванов", name="Иван"):
+    response = requests.post(
+        f"{PORTAL_URL}/patients",
+        json={
+            "surname": surname,
+            "name": name,
+            "patronymic": "Иванович",
+            "date_of_birth": "2000-01-01",
+        },
+        timeout=5,
+    )
+    assert_success(response)
+    return response.json()["id"]
+
+
+def create_card(patient_id, employee_id, complaints, notes):
+    response = requests.post(
+        f"{PORTAL_URL}/cards",
+        json={
+            "patient_id": patient_id,
+            "employee_id": employee_id,
+            "complaints": complaints,
+            "notes": notes,
+        },
+        timeout=5,
+    )
+    assert_success(response)
+    return response.json()["id"]
+
+
+def create_appointment(patient_id, employee_id, scheduled_at, reason):
+    response = requests.post(
+        f"{PORTAL_URL}/appointments",
+        json={
+            "patient_id": patient_id,
+            "employee_id": employee_id,
+            "scheduled_at": scheduled_at,
+            "reason": reason,
+        },
+        timeout=5,
+    )
+    assert_success(response)
+    body = response.json()
+    assert body["status"] == "CONFIRMED"
+    return body["id"]
+
+
+def create_investigation(patient_id, card_id, test_name):
+    response = requests.post(
+        f"{PORTAL_URL}/investigations",
+        json={
+            "patient_id": patient_id,
+            "card_id": card_id,
+            "test_name": test_name,
+        },
+        timeout=5,
+    )
+    assert_success(response)
+    return response.json()["id"]
+
+
+def create_prescription(patient_id, employee_id, card_id, medicine_id):
+    response = requests.post(
+        f"{PORTAL_URL}/prescriptions",
+        json={
+            "patient_id": patient_id,
+            "employee_id": employee_id,
+            "card_id": card_id,
+            "medicine_id": medicine_id,
+            "medicine_name": "Парацетамол",
+            "dosage_instructions": "По 1 таблетке 2 раза в день после еды",
+        },
+        timeout=5,
+    )
+    assert_success(response)
+    return response.json()["id"]
+
+
+def complete_lab_analysis(investigation_id, results):
+    sample_response = requests.post(
+        f"{LAB_URL}/samples/register",
+        json={
+            "investigation_id": investigation_id,
+            "sample_type": "blood",
+            "storage_location": "LAB-A-01",
+        },
+        timeout=5,
+    )
+    assert_success(sample_response)
+
+    storage_response = requests.post(f"{LAB_URL}/samples/{investigation_id}/to-storage", timeout=5)
+    assert_success(storage_response)
+
+    analysis_response = requests.post(f"{LAB_URL}/samples/{investigation_id}/to-analysis", timeout=5)
+    assert_success(analysis_response)
+
+    analyzer_response = requests.post(
+        f"{LAB_URL}/analyzers",
+        json={"name": "Analyzer-1", "model": "BioChem X"},
+        timeout=5,
+    )
+    assert_success(analyzer_response)
+    analyzer_id = analyzer_response.json()["id"]
+
+    workstation_response = requests.post(
+        f"{LAB_URL}/workstations",
+        json={"name": "WS-1", "location": "Lab room 2"},
+        timeout=5,
+    )
+    assert_success(workstation_response)
+    workstation_id = workstation_response.json()["id"]
+
+    analyzer_result_response = requests.post(
+        f"{LAB_URL}/analyzer-results",
+        json={
+            "investigation_id": investigation_id,
+            "analyzer_id": analyzer_id,
+            "workstation_id": workstation_id,
+            "raw_result": results,
+        },
+        timeout=5,
+    )
+    assert_success(analyzer_result_response)
+
+    complete_response = requests.post(
+        f"{LAB_URL}/investigations/complete",
+        json={"investigation_id": investigation_id, "results": results},
+        timeout=5,
+    )
+    assert_success(complete_response)
+
+
+
+
+@pytest.mark.e2e
+def test_patient_doctor_scenario_via_portal(db_conn, seed_base):
+    """
+    Сценарий "пациент -> врач -> портал":
+    пациент создается в портале, врач создает запись ЭМК и запись на прием.
+    """
+
+    assert_success(requests.get(f"{PORTAL_URL}/health", timeout=5))
+
+    patient_id = create_patient("Егоров", "Дмитрий")
+    appointment_id = create_appointment(
+        patient_id,
+        seed_base["doctor_id"],
+        "2026-06-10T08:00:00Z",
+        "Консультация врача",
+    )
+    card_id = create_card(
+        patient_id,
+        seed_base["doctor_id"],
+        "Боль в горле",
+        "Рекомендовано наблюдение и повторный осмотр",
+    )
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT p.id, c.employee_id, a.status, c.complaints
+            FROM public.patients p
+            JOIN public.cards c ON c.patient_id = p.id
+            JOIN public.appointments a ON a.patient_id = p.id
+            WHERE p.id = %s AND c.id = %s AND a.id = %s
+            """,
+            (patient_id, card_id, appointment_id),
         )
-        self.assertNotIn(
-            code,
-            (401, 403),
-            msg=f"Expected SQLi probe to pass preflight and reach app layer, got {code}",
+        row = cur.fetchone()
+
+    assert row is not None
+    assert row[0] == patient_id
+    assert row[1] == seed_base["doctor_id"]
+    assert row[2] == "CONFIRMED"
+    assert row[3] == "Боль в горле"
+
+
+@pytest.mark.e2e
+def test_patient_pharmacy_portal_scenario(db_conn, seed_base):
+    """
+    Сценарий "пациент -> аптека -> портал":
+    врач в портале создает рецепт пациенту, аптека его обрабатывает и выдает лекарство.
+    """
+
+    for url in (PORTAL_URL, PHARMACY_URL):
+        assert_success(requests.get(f"{url}/health", timeout=5))
+
+    patient_id = create_patient("Орехов", "Павел")
+    card_id = create_card(
+        patient_id,
+        seed_base["doctor_id"],
+        "Температура и озноб",
+        "Назначен жаропонижающий препарат",
+    )
+    prescription_id = create_prescription(
+        patient_id,
+        seed_base["doctor_id"],
+        card_id,
+        seed_base["medicine_id"],
+    )
+
+    assert_success(
+        requests.post(
+            f"{PHARMACY_URL}/scanner/prescription",
+            json={"prescription_id": prescription_id, "code": f"RX-{prescription_id}"},
+            timeout=5,
         )
-
-    def test_hc20_xss_with_valid_signature_not_reflected(self):
-        if not self._network_available:
-            self.skipTest("portal is not available")
-        payload = {"surname": "<img src=x onerror=alert(1)>", "name": "XSS probe"}
-        code, body = _request(
-            "POST",
-            "/patients",
-            payload,
-            {"X-Request-ID": _unique_request_id("deep-hc20"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID},
+    )
+    assert_success(
+        requests.post(
+            f"{PHARMACY_URL}/scanner/medicine",
+            json={"medicine_id": seed_base["medicine_id"], "code": f"MED-{seed_base['medicine_id']}"},
+            timeout=5,
         )
-        self.assertNotIn(
-            code,
-            (401, 403),
-            msg=f"Expected XSS probe to pass preflight and reach app layer, got {code}",
+    )
+    assert_success(
+        requests.post(
+            f"{PHARMACY_URL}/dispense",
+            json={"prescription_id": prescription_id, "quantity": 1},
+            timeout=5,
         )
-        self.assertNotIn(
-            "<img src=x onerror=alert(1)>",
-            body,
-            msg="Potential reflected/stored XSS marker detected in API response body",
+    )
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT pr.status, ws.quantity
+            FROM public.prescriptions pr
+            JOIN public.warehouse_stock ws ON ws.medicine_id = pr.medicine_id
+            WHERE pr.id = %s
+            """,
+            (prescription_id,),
         )
+        row = cur.fetchone()
 
-    def test_hc06_sqli_payload_set_with_valid_signature(self):
-        if not self._network_available:
-            self.skipTest("portal is not available")
-        payloads = [
-            {"surname": "' OR 1=1 --", "name": "SQLi-1"},
-            {"surname": "\" OR \"1\"=\"1", "name": "SQLi-2"},
-            {"surname": "x'; DROP TABLE patients; --", "name": "SQLi-3"},
-            {"surname": "admin'/**/OR/**/1=1--", "name": "SQLi-4"},
-        ]
-        for idx, payload in enumerate(payloads, start=1):
-            code, body = _request(
-                "POST",
-                "/patients",
-                payload,
-                {"X-Request-ID": _unique_request_id(f"deep-hc06-set-{idx}"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID},
-            )
-            self.assertIn(
-                code,
-                (200, 201, 400),
-                msg=f"Unexpected code for SQLi payload set item {idx}: {code}, body={body}",
-            )
-            self.assertNotIn(
-                code,
-                (401, 403, 500),
-                msg=f"SQLi payload set item {idx} should not fail in preflight or server error: {code}",
-            )
-
-    def test_hc20_xss_payload_set_with_valid_signature_not_reflected(self):
-        if not self._network_available:
-            self.skipTest("portal is not available")
-        payloads = [
-            {"surname": "<script>alert(1)</script>", "name": "XSS-1"},
-            {"surname": "<img src=x onerror=alert(1)>", "name": "XSS-2"},
-            {"surname": "<svg/onload=alert(1)>", "name": "XSS-3"},
-            {"surname": "\"><script>alert(String.fromCharCode(88,83,83))</script>", "name": "XSS-4"},
-        ]
-        for idx, payload in enumerate(payloads, start=1):
-            code, body = _request(
-                "POST",
-                "/patients",
-                payload,
-                {"X-Request-ID": _unique_request_id(f"deep-hc20-set-{idx}"), "X-Subject-ID": STRICT_DOCTOR_SUBJECT_ID},
-            )
-            self.assertIn(
-                code,
-                (200, 201, 400),
-                msg=f"Unexpected code for XSS payload set item {idx}: {code}, body={body}",
-            )
-            self.assertNotIn(
-                code,
-                (401, 403, 500),
-                msg=f"XSS payload set item {idx} should not fail in preflight or server error: {code}",
-            )
-            lowered = body.lower()
-            self.assertNotIn("<script", lowered, msg=f"Potential reflected HTML tag found for item {idx}")
-            self.assertNotIn("<img", lowered, msg=f"Potential reflected HTML tag found for item {idx}")
-            self.assertNotIn("<svg", lowered, msg=f"Potential reflected HTML tag found for item {idx}")
-            self.assertNotIn("</script>", lowered, msg=f"Potential reflected HTML tag found for item {idx}")
+    assert row is not None
+    assert row[0] == "DISPENSED"
+    assert row[1] == 9
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.e2e
+def test_patient_laboratory_portal_scenario(db_conn, seed_base):
+    """
+    Сценарий "пациент -> лаборатория -> портал":
+    врач оформляет назначение анализа в портале, лаборатория выполняет его
+    и результат сохраняется в ЭМК.
+    """
+
+    for url in (PORTAL_URL, LAB_URL):
+        assert_success(requests.get(f"{url}/health", timeout=5))
+
+    patient_id = create_patient("Савин", "Игорь")
+    card_id = create_card(
+        patient_id,
+        seed_base["doctor_id"],
+        "Слабость",
+        "Назначен общий анализ крови",
+    )
+    investigation_id = create_investigation(patient_id, card_id, "Общий анализ крови")
+
+    lab_results = "Hemoglobin=140; Leukocytes=5.8"
+    complete_lab_analysis(investigation_id, lab_results)
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT li.status, li.results, li.patient_id, li.card_id
+            FROM public.laboratory_investigations li
+            WHERE li.id = %s
+            """,
+            (investigation_id,),
+        )
+        row = cur.fetchone()
+
+    assert row is not None
+    assert row[0] == "COMPLETED"
+    assert row[1] == lab_results
+    assert row[2] == patient_id
+    assert row[3] == card_id

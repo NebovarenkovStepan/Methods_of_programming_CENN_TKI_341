@@ -1,6 +1,15 @@
 from db import fetch_one
 
 
+ALLOWED_LAB_ROLES = {"lab_tech", "doctor", "admin"}
+
+
+def _require_authorized_role(conn):
+    role = getattr(conn, "caller_role", None)
+    if role not in ALLOWED_LAB_ROLES:
+        raise PermissionError("caller is not authorized for laboratory operations")
+
+
 class MonitoringService:
     def add_metric(
         self,
@@ -9,6 +18,7 @@ class MonitoringService:
         metric_name: str,
         metric_value: str,
     ) -> dict:
+        _require_authorized_role(conn)
         cur = conn.cursor()
         cur.execute(
             """

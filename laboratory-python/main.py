@@ -142,13 +142,15 @@ class LaboratoryHandler(BaseHTTPRequestHandler):
         try:
             body = b"{}"
             if parsed.path == "/investigations/ordered":
-                _preflight(self, ACTION_GET_ORDERED_INVESTIGATIONS, "investigations", body)
+                subject = _preflight(self, ACTION_GET_ORDERED_INVESTIGATIONS, "investigations", body)
                 with get_connection() as conn:
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     return _json_response(self, 200, lis_service.get_ordered_investigations(conn))
             if parsed.path.startswith("/investigations/"):
                 inv_id = int(parsed.path.split("/")[-1])
-                _preflight(self, ACTION_GET_INVESTIGATION, "investigations", body, investigation_id=inv_id)
+                subject = _preflight(self, ACTION_GET_INVESTIGATION, "investigations", body, investigation_id=inv_id)
                 with get_connection() as conn:
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     result = lis_service.get_investigation(conn, inv_id)
                     if result is None:
                         return _json_response(self, 404, {"detail": "investigation not found"})
@@ -168,41 +170,51 @@ class LaboratoryHandler(BaseHTTPRequestHandler):
             with get_connection() as conn:
                 if parsed.path == "/samples/register":
                     subject = _preflight(self, ACTION_REGISTER_SAMPLE, "samples", body, investigation_id=payload["investigation_id"])
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     inv = lis_service.get_investigation(conn, payload["investigation_id"])
                     if inv is not None:
                         identity_service.verify_patient_identity(subject, inv["patient_id"])
                     return _json_response(self, 201, sample_service.register_sample(conn, payload["investigation_id"], payload["sample_type"], payload.get("storage_location")))
                 if parsed.path.startswith("/samples/") and parsed.path.endswith("/to-storage"):
                     inv_id = int(parsed.path.split("/")[2])
-                    _preflight(self, ACTION_MOVE_SAMPLE_TO_STORAGE, "samples", body, investigation_id=inv_id)
+                    subject = _preflight(self, ACTION_MOVE_SAMPLE_TO_STORAGE, "samples", body, investigation_id=inv_id)
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     result = sample_service.move_sample_to_storage(conn, inv_id)
                     return _json_response(self, 201 if result else 404, result or {"detail": "sample not found"})
                 if parsed.path.startswith("/samples/") and parsed.path.endswith("/to-analysis"):
                     inv_id = int(parsed.path.split("/")[2])
-                    _preflight(self, ACTION_MOVE_SAMPLE_TO_ANALYSIS, "samples", body, investigation_id=inv_id)
+                    subject = _preflight(self, ACTION_MOVE_SAMPLE_TO_ANALYSIS, "samples", body, investigation_id=inv_id)
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     result = sample_service.move_sample_to_analysis(conn, inv_id)
                     return _json_response(self, 201 if result else 404, result or {"detail": "sample not found"})
                 if parsed.path == "/analyzers":
-                    _preflight(self, ACTION_CREATE_ANALYZER, "analyzers", body)
+                    subject = _preflight(self, ACTION_CREATE_ANALYZER, "analyzers", body)
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     return _json_response(self, 201, analyzer_service.create_analyzer(conn, payload["name"], payload.get("model")))
                 if parsed.path == "/workstations":
-                    _preflight(self, ACTION_CREATE_WORKSTATION, "workstations", body)
+                    subject = _preflight(self, ACTION_CREATE_WORKSTATION, "workstations", body)
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     return _json_response(self, 201, workstation_service.create_workstation(conn, payload["name"], payload.get("location")))
                 if parsed.path == "/analyzer-results":
-                    _preflight(self, ACTION_SAVE_ANALYZER_RESULT, "analyzer_results", body, investigation_id=payload["investigation_id"])
+                    subject = _preflight(self, ACTION_SAVE_ANALYZER_RESULT, "analyzer_results", body, investigation_id=payload["investigation_id"])
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     return _json_response(self, 201, analyzer_service.save_analyzer_result(conn, payload["investigation_id"], payload.get("analyzer_id"), payload.get("workstation_id"), payload["raw_result"]))
                 if parsed.path == "/investigations/complete":
-                    _preflight(self, ACTION_COMPLETE_INVESTIGATION, "investigations", body, investigation_id=payload["investigation_id"])
+                    subject = _preflight(self, ACTION_COMPLETE_INVESTIGATION, "investigations", body, investigation_id=payload["investigation_id"])
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     result = lis_service.complete_investigation(conn, payload["investigation_id"], payload["results"])
                     return _json_response(self, 201 if result else 404, result or {"detail": "investigation not found"})
                 if parsed.path == "/equipment":
-                    _preflight(self, ACTION_CREATE_EQUIPMENT, "equipment", body)
+                    subject = _preflight(self, ACTION_CREATE_EQUIPMENT, "equipment", body)
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     return _json_response(self, 201, equipment_service.create_equipment(conn, payload["name"], payload["equipment_type"], payload.get("location")))
                 if parsed.path == "/monitoring/metrics":
-                    _preflight(self, ACTION_ADD_METRIC, "monitoring", body)
+                    subject = _preflight(self, ACTION_ADD_METRIC, "monitoring", body)
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     return _json_response(self, 201, monitoring_service.add_metric(conn, payload["equipment_id"], payload["metric_name"], payload["metric_value"]))
                 if parsed.path == "/diagnostics":
-                    _preflight(self, ACTION_ADD_DIAGNOSTIC, "diagnostics", body)
+                    subject = _preflight(self, ACTION_ADD_DIAGNOSTIC, "diagnostics", body)
+                    conn.caller_role = subject.roles[0] if subject.roles else None
                     return _json_response(self, 201, diagnostics_service.add_diagnostic(conn, payload["equipment_id"], payload["diagnostic_status"], payload.get("details")))
             return _json_response(self, 404, {"error": "not found"})
         except PermissionError as exc:

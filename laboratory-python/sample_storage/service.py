@@ -1,6 +1,15 @@
 from db import fetch_one
 
 
+ALLOWED_LAB_ROLES = {"lab_tech", "doctor", "admin"}
+
+
+def _require_authorized_role(conn):
+    role = getattr(conn, "caller_role", None)
+    if role not in ALLOWED_LAB_ROLES:
+        raise PermissionError("caller is not authorized for laboratory operations")
+
+
 class SampleStorageService:
     def register_sample(
         self,
@@ -9,6 +18,7 @@ class SampleStorageService:
         sample_type: str,
         storage_location: str | None = None,
     ) -> dict:
+        _require_authorized_role(conn)
         cur = conn.cursor()
         cur.execute(
             """
@@ -29,6 +39,7 @@ class SampleStorageService:
         return fetch_one(cur)
 
     def move_sample_to_storage(self, conn, investigation_id: int) -> dict | None:
+        _require_authorized_role(conn)
         cur = conn.cursor()
         cur.execute(
             """
@@ -53,6 +64,7 @@ class SampleStorageService:
         return fetch_one(cur)
 
     def move_sample_to_analysis(self, conn, investigation_id: int) -> dict | None:
+        _require_authorized_role(conn)
         cur = conn.cursor()
         cur.execute(
             """

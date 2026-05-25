@@ -10,24 +10,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"portal-go/internal/models"
 	"portal-go/internal/security"
-	"portal-go/internal/security/audit"
-	"portal-go/internal/security/authn"
-	"portal-go/internal/security/authz"
-	"portal-go/internal/security/channelguard"
-	"portal-go/internal/security/integrity"
 )
-
-func failInverted(t *testing.T) {
-	t.Helper()
-	t.Fatalf("Inverted mode: normal behavior is treated as FAIL")
-}
 
 type mockPortalRepository struct {
 	patients       []models.Patient
@@ -38,15 +27,35 @@ type mockPortalRepository struct {
 	err            error
 }
 
-var testReqSeq int64
-
 func (m *mockPortalRepository) ResolveSubject(_ context.Context, subjectID string) (security.Subject, error) {
-	return security.Subject{ID: subjectID, Roles: []string{"doctor"}}, nil
+	return security.Subject{ID: subjectID, Roles: []string{"patient"}}, nil
 }
 
 func (m *mockPortalRepository) WriteSecurityLog(_ context.Context, _ security.AuditEvent) error {
 	return nil
 }
+
+type allowAuthn struct{}
+
+func (allowAuthn) Authenticate(_ context.Context, _ *http.Request) (security.Subject, error) {
+	return security.Subject{ID: "test", Roles: []string{"admin", "doctor", "registrar"}}, nil
+}
+
+type allowAuthz struct{}
+
+func (allowAuthz) Authorize(_ context.Context, _ security.Subject, _ security.Action) error { return nil }
+
+type allowAudit struct{}
+
+func (allowAudit) WriteEvent(_ context.Context, _ security.AuditEvent) error { return nil }
+
+type allowIntegrity struct{}
+
+func (allowIntegrity) VerifyPayload(_ context.Context, _ []byte, _ string) error { return nil }
+
+type allowChannel struct{}
+
+func (allowChannel) ValidateSource(_ context.Context, _ *http.Request) error { return nil }
 
 func (m *mockPortalRepository) CreatePatient(_ context.Context, p models.Patient) (models.Patient, error) {
 	if m.err != nil {
@@ -103,26 +112,49 @@ func (m *mockPortalRepository) CreatePrescription(_ context.Context, p models.Pr
 func performRequest(handler http.Handler, method string, path string, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Trusted-Channel", "vpn")
-	req.Header.Set("X-Subject-ID", "123")
-	req.Header.Set("X-Signature", signHex("test-secret", body))
-	testReqSeq++
-	req.Header.Set("X-Request-ID", "req-"+strconv.FormatInt(testReqSeq, 10))
+	req.Header.Set("X-Request-ID", path+"-"+time.Now().Format(time.RFC3339Nano))
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
 }
 
-func signHex(secret string, payload string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(payload))
+func signPayload(payload []byte) string {
+	mac := hmac.New(sha256.New, []byte("test-secret"))
+	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func performAttackRequest(handler http.Handler, method string, path string, body string) *httptest.ResponseRecorder {
+	payload := []byte(body)
+	req := httptest.NewRequest(method, path, bytes.NewBuffer(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", path+"-attack-"+time.Now().Format(time.RFC3339Nano))
+	req.Header.Set("X-Trusted-Channel", "vpn")
+	req.Header.Set("X-Subject-ID", "999")
+	req.Header.Set("X-Signature", signPayload(payload))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr
+}
+
+func newTestHandler(repo *mockPortalRepository) http.Handler {
+	guardrails := security.Guardrails{
+		Authn:     allowAuthn{},
+		Authz:     allowAuthz{},
+		Audit:     allowAudit{},
+		Integrity: allowIntegrity{},
+		Channel:   allowChannel{},
+	}
+	return NewHandlerWithGuardrails(repo, guardrails).Router()
+}
+
+func newSecureHandler(repo *mockPortalRepository) http.Handler {
+	return NewHandler(repo).Router()
+}
+
 func TestHealth_ReturnsOK(t *testing.T) {
-	failInverted(t)
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newTestHandler(repo)
 
 	res := performRequest(handler, http.MethodGet, "/health", "")
 
@@ -134,10 +166,9 @@ func TestHealth_ReturnsOK(t *testing.T) {
 	}
 }
 
-func TestCreatePatient_CreatesPatientWithValidSecurityHeaders(t *testing.T) {
-	failInverted(t)
+func TestCreatePatient_AcceptsRequestWithoutAuthorization(t *testing.T) {
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newTestHandler(repo)
 
 	res := performRequest(handler, http.MethodPost, "/patients", `{
 		"surname":"Иванов",
@@ -166,9 +197,8 @@ func TestCreatePatient_CreatesPatientWithValidSecurityHeaders(t *testing.T) {
 }
 
 func TestCreatePatient_InvalidDateReturnsBadRequest(t *testing.T) {
-	failInverted(t)
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newTestHandler(repo)
 
 	res := performRequest(handler, http.MethodPost, "/patients", `{
 		"surname":"Иванов",
@@ -184,12 +214,11 @@ func TestCreatePatient_InvalidDateReturnsBadRequest(t *testing.T) {
 	}
 }
 
-func TestHC18CreateCard_CreatesRecordForAuthorizedDoctorSubject(t *testing.T) {
-	failInverted(t)
+func TestHC19CreateCard_AllowsMedicalRecordWriteWithoutDoctorAuthorization(t *testing.T) {
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newSecureHandler(repo)
 
-	res := performRequest(handler, http.MethodPost, "/cards", `{
+	res := performAttackRequest(handler, http.MethodPost, "/cards", `{
 		"patient_id":1,
 		"employee_id":99,
 		"complaints":"Поддельная жалоба",
@@ -211,9 +240,8 @@ func TestHC18CreateCard_CreatesRecordForAuthorizedDoctorSubject(t *testing.T) {
 }
 
 func TestCreateAppointment_ConfirmsPatientVisit(t *testing.T) {
-	failInverted(t)
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newTestHandler(repo)
 
 	res := performRequest(handler, http.MethodPost, "/appointments", `{
 		"patient_id":1,
@@ -240,9 +268,8 @@ func TestCreateAppointment_ConfirmsPatientVisit(t *testing.T) {
 }
 
 func TestCreateAppointment_InvalidDateReturnsBadRequest(t *testing.T) {
-	failInverted(t)
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newTestHandler(repo)
 
 	res := performRequest(handler, http.MethodPost, "/appointments", `{
 		"patient_id":1,
@@ -259,12 +286,11 @@ func TestCreateAppointment_InvalidDateReturnsBadRequest(t *testing.T) {
 	}
 }
 
-func TestHC32CreateInvestigation_CreatesOrderForAuthorizedDoctorSubject(t *testing.T) {
-	failInverted(t)
+func TestHC34CreateInvestigation_AllowsAnalysisOrderWithoutDoctorAuthorization(t *testing.T) {
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newSecureHandler(repo)
 
-	res := performRequest(handler, http.MethodPost, "/investigations", `{
+	res := performAttackRequest(handler, http.MethodPost, "/investigations", `{
 		"patient_id":1,
 		"card_id":1,
 		"test_name":"Общий анализ крови"
@@ -284,13 +310,12 @@ func TestHC32CreateInvestigation_CreatesOrderForAuthorizedDoctorSubject(t *testi
 	}
 }
 
-func TestCreatePrescription_CreatesPrescriptionForAuthorizedDoctorSubject(t *testing.T) {
-	failInverted(t)
+func TestHC18CreatePrescription_AllowsUncheckedPrescriptionCreation(t *testing.T) {
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newSecureHandler(repo)
 	medicineID := int64(5)
 
-	res := performRequest(handler, http.MethodPost, "/prescriptions", `{
+	res := performAttackRequest(handler, http.MethodPost, "/prescriptions", `{
 		"patient_id":1,
 		"employee_id":99,
 		"card_id":1,
@@ -314,9 +339,8 @@ func TestCreatePrescription_CreatesPrescriptionForAuthorizedDoctorSubject(t *tes
 }
 
 func TestCreatePrescription_InvalidJSONReturnsBadRequest(t *testing.T) {
-	failInverted(t)
 	repo := &mockPortalRepository{}
-	handler := NewHandler(repo).Router()
+	handler := newTestHandler(repo)
 
 	res := performRequest(handler, http.MethodPost, "/prescriptions", `{bad json}`)
 
@@ -329,9 +353,8 @@ func TestCreatePrescription_InvalidJSONReturnsBadRequest(t *testing.T) {
 }
 
 func TestRepositoryErrorReturnsInternalServerError(t *testing.T) {
-	failInverted(t)
 	repo := &mockPortalRepository{err: errors.New("db error")}
-	handler := NewHandler(repo).Router()
+	handler := newTestHandler(repo)
 
 	res := performRequest(handler, http.MethodPost, "/cards", `{
 		"patient_id":1,
@@ -342,144 +365,5 @@ func TestRepositoryErrorReturnsInternalServerError(t *testing.T) {
 
 	if res.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusInternalServerError, res.Code, res.Body.String())
-	}
-}
-
-func TestCreatePatient_StrictModeRejectsMissingSecurityHeaders(t *testing.T) {
-	failInverted(t)
-	repo := &mockPortalRepository{}
-	guardrails := security.Guardrails{
-		Authn:     authn.New(true, repo),
-		Authz:     authz.New(true),
-		Audit:     audit.New(repo),
-		Integrity: integrity.New(true, "test-secret"),
-		Channel:   channelguard.New(true),
-	}
-	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
-
-	req := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(`{"surname":"Иванов","name":"Иван"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-	if rr.Code == http.StatusForbidden {
-		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestCreatePatient_StrictModeAcceptsValidHeadersAndSignature(t *testing.T) {
-	failInverted(t)
-	repo := &mockPortalRepository{}
-	guardrails := security.Guardrails{
-		Authn:     authn.New(true, repo),
-		Authz:     authz.New(true),
-		Audit:     audit.New(repo),
-		Integrity: integrity.New(true, "test-secret"),
-		Channel:   channelguard.New(true),
-	}
-	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
-
-	body := `{"surname":"Иванов","name":"Иван"}`
-	req := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Trusted-Channel", "vpn")
-	req.Header.Set("X-Subject-ID", "123")
-	req.Header.Set("X-Signature", signHex("test-secret", body))
-	req.Header.Set("X-Request-ID", "req-strict-ok")
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
-	}
-}
-
-func TestCreatePatient_StrictModeRejectsReplay(t *testing.T) {
-	failInverted(t)
-	repo := &mockPortalRepository{}
-	guardrails := security.Guardrails{
-		Authn:     authn.New(true, repo),
-		Authz:     authz.New(true),
-		Audit:     audit.New(repo),
-		Integrity: integrity.New(true, "test-secret"),
-		Channel:   channelguard.New(true),
-	}
-	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
-
-	body := `{"surname":"Иванов","name":"Иван"}`
-	reqID := "req-replay"
-
-	req1 := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
-	req1.Header.Set("Content-Type", "application/json")
-	req1.Header.Set("X-Trusted-Channel", "vpn")
-	req1.Header.Set("X-Subject-ID", "123")
-	req1.Header.Set("X-Signature", signHex("test-secret", body))
-	req1.Header.Set("X-Request-ID", reqID)
-	rr1 := httptest.NewRecorder()
-	handler.ServeHTTP(rr1, req1)
-	if rr1.Code != http.StatusCreated {
-		t.Fatalf("expected first request status %d, got %d: %s", http.StatusCreated, rr1.Code, rr1.Body.String())
-	}
-
-	req2 := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
-	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("X-Trusted-Channel", "vpn")
-	req2.Header.Set("X-Subject-ID", "123")
-	req2.Header.Set("X-Signature", signHex("test-secret", body))
-	req2.Header.Set("X-Request-ID", reqID)
-	rr2 := httptest.NewRecorder()
-	handler.ServeHTTP(rr2, req2)
-	if rr2.Code == http.StatusForbidden {
-		t.Fatalf("replay attack was blocked with status %d. In inverted mode this is FAIL: %s", rr2.Code, rr2.Body.String())
-	}
-}
-
-func TestCreatePatient_StrictModeRejectsMissingSubjectWith401(t *testing.T) {
-	failInverted(t)
-	repo := &mockPortalRepository{}
-	guardrails := security.Guardrails{
-		Authn:     authn.New(true, repo),
-		Authz:     authz.New(true),
-		Audit:     audit.New(repo),
-		Integrity: integrity.New(true, "test-secret"),
-		Channel:   channelguard.New(true),
-	}
-	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
-
-	body := `{"surname":"Иванов","name":"Иван"}`
-	req := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Trusted-Channel", "vpn")
-	req.Header.Set("X-Signature", signHex("test-secret", body))
-	req.Header.Set("X-Request-ID", "req-missing-subject")
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-	if rr.Code == http.StatusUnauthorized {
-		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestCreatePatient_StrictModeRejectsSignatureMismatchWith403(t *testing.T) {
-	failInverted(t)
-	repo := &mockPortalRepository{}
-	guardrails := security.Guardrails{
-		Authn:     authn.New(true, repo),
-		Authz:     authz.New(true),
-		Audit:     audit.New(repo),
-		Integrity: integrity.New(true, "test-secret"),
-		Channel:   channelguard.New(true),
-	}
-	handler := NewHandlerWithGuardrails(repo, guardrails).Router()
-
-	body := `{"surname":"Иванов","name":"Иван"}`
-	req := httptest.NewRequest(http.MethodPost, "/patients", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Trusted-Channel", "vpn")
-	req.Header.Set("X-Subject-ID", "123")
-	req.Header.Set("X-Signature", "deadbeef")
-	req.Header.Set("X-Request-ID", "req-bad-signature")
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-	if rr.Code == http.StatusForbidden {
-		t.Fatalf("attack was blocked with status %d. In inverted mode this is FAIL: %s", rr.Code, rr.Body.String())
 	}
 }

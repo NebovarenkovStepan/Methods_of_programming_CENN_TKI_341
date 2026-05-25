@@ -1,8 +1,18 @@
 from db import fetch_all, fetch_one
 
 
+ALLOWED_LAB_ROLES = {"lab_tech", "doctor", "admin"}
+
+
+def _require_authorized_role(conn):
+    role = getattr(conn, "caller_role", None)
+    if role not in ALLOWED_LAB_ROLES:
+        raise PermissionError("caller is not authorized for laboratory investigations")
+
+
 class LISService:
     def get_ordered_investigations(self, conn) -> list[dict]:
+        _require_authorized_role(conn)
         cur = conn.cursor()
         cur.execute(
             """
@@ -15,6 +25,7 @@ class LISService:
         return fetch_all(cur)
 
     def get_investigation(self, conn, investigation_id: int) -> dict | None:
+        _require_authorized_role(conn)
         cur = conn.cursor()
         cur.execute(
             """
@@ -27,6 +38,7 @@ class LISService:
         return fetch_one(cur)
 
     def complete_investigation(self, conn, investigation_id: int, results: str) -> dict | None:
+        _require_authorized_role(conn)
         cur = conn.cursor()
         cur.execute(
             """
