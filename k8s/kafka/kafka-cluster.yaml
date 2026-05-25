@@ -1,0 +1,28 @@
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: hospital-kafka
+  namespace: kafka
+spec:
+  kafka:
+    replicas: 1
+
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+
+    config:
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+
+    storage:
+      type: ephemeral
+
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}

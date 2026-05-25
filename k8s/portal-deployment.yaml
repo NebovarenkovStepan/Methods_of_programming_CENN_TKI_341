@@ -25,6 +25,8 @@ spec:
                 secretKeyRef:
                   name: app-secrets
                   key: integrity-secret
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "hospital-kafka-kafka-bootstrap.kafka:9092"
           ports:
             - containerPort: 8080
           readinessProbe:
