@@ -54,3 +54,5 @@ class AnalyzerService:
             (result_id,),
         )
         return fetch_one(cur)
+    
+    
