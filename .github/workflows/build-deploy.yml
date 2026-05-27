@@ -31,6 +31,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          install: true
+
       - name: Check which images already exist
         id: check
         run: |
@@ -54,6 +60,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/laboratory:latest
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/laboratory:${{ github.sha }}
+          cache-from: type=gha,scope=laboratory
+          cache-to: type=gha,mode=max,scope=laboratory
 
       - name: Build and push LLM
         if: steps.check.outputs.llm_exists != 'true'
@@ -64,6 +72,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/llm:latest
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/llm:${{ github.sha }}
+          cache-from: type=gha,scope=llm
+          cache-to: type=gha,mode=max,scope=llm
 
       - name: Build and push Pharmacy
         if: steps.check.outputs.pharmacy_exists != 'true'
@@ -74,6 +84,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/pharmacy:latest
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/pharmacy:${{ github.sha }}
+          cache-from: type=gha,scope=pharmacy
+          cache-to: type=gha,mode=max,scope=pharmacy
 
       - name: Build and push Portal
         if: steps.check.outputs.portal_exists != 'true'
@@ -84,6 +96,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/portal:latest
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/portal:${{ github.sha }}
+          cache-from: type=gha,scope=portal
+          cache-to: type=gha,mode=max,scope=portal
 
       - name: Build and push Tests image
         if: steps.check.outputs.tests_exists != 'true'
@@ -94,6 +108,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/tests:latest
             ${{ env.REGISTRY }}/${{ steps.lowercase.outputs.repo_lower }}/tests:${{ github.sha }}
+          cache-from: type=gha,scope=tests
+          cache-to: type=gha,mode=max,scope=tests
 
   # ---------- Unit Tests ----------
   test:
