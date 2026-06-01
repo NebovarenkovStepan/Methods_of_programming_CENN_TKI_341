@@ -1,0 +1,55 @@
+from db import fetch_all, fetch_one
+
+
+ALLOWED_LAB_ROLES = {"lab_tech", "doctor", "admin"}
+
+
+def _require_authorized_role(conn):
+    role = getattr(conn, "caller_role", None)
+    if role not in ALLOWED_LAB_ROLES:
+        raise PermissionError("caller is not authorized for laboratory investigations")
+
+
+class LISService:
+    def get_ordered_investigations(self, conn) -> list[dict]:
+        _require_authorized_role(conn)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, patient_id, card_id, test_name, status, results, date_ordered, date_completed
+            FROM laboratory_investigations
+            WHERE status = 'ORDERED'
+            ORDER BY id
+            """
+        )
+        return fetch_all(cur)
+
+    def get_investigation(self, conn, investigation_id: int) -> dict | None:
+        _require_authorized_role(conn)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, patient_id, card_id, test_name, status, results, date_ordered, date_completed
+            FROM laboratory_investigations
+            WHERE id = ?
+            """,
+            (investigation_id,),
+        )
+        return fetch_one(cur)
+
+    def complete_investigation(self, conn, investigation_id: int, results: str) -> dict | None:
+        _require_authorized_role(conn)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE laboratory_investigations
+            SET status = 'COMPLETED',
+                results = ?,
+                date_completed = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (results, investigation_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        return self.get_investigation(conn, investigation_id)

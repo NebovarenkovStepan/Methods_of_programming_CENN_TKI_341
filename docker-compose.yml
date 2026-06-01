@@ -1,0 +1,140 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: hospital-postgres
+    environment:
+      POSTGRES_USER: hospital
+      POSTGRES_PASSWORD: hospital_password
+      POSTGRES_DB: hospital_db
+      POSTGRES_INITDB_ARGS: "-c log_connections=on"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hospital -d hospital_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - hospital-network
+    # platform: linux/amd64  ← УБРАЛИ
+
+  # Laboratory Service
+  laboratory:
+    build:
+      context: ./laboratory-python
+      dockerfile: Dockerfile
+    container_name: hospital-laboratory
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://hospital:hospital_password@postgres:5432/hospital_db
+      PYTHONUNBUFFERED: "1"
+      INTEGRITY_SECRET: "test-secret"
+    ports:
+      - "8001:8000"
+    networks:
+      - hospital-network
+    restart: unless-stopped
+    # Платформа не указана, будет arm64 на Apple Silicon
+
+  # LLM Service
+  llm:
+    build:
+      context: ./llm-python
+      dockerfile: Dockerfile
+    container_name: hospital-llm
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://hospital:hospital_password@postgres:5432/hospital_db
+      PYTHONUNBUFFERED: "1"
+      INTEGRITY_SECRET: "test-secret"
+    ports:
+      - "8002:8000"
+    networks:
+      - hospital-network
+    restart: unless-stopped
+
+  # Pharmacy Service (Go)
+  pharmacy:
+    build:
+      context: ./pharmacy-go
+      dockerfile: Dockerfile
+    container_name: hospital-pharmacy
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://hospital:hospital_password@postgres:5432/hospital_db"
+      PORT: "8081"
+      INTEGRITY_SECRET: "test-secret"
+    ports:
+      - "8081:8081"
+    networks:
+      - hospital-network
+    restart: unless-stopped
+
+  # Portal Service (Go)
+  portal:
+    build:
+      context: ./portal-go
+      dockerfile: Dockerfile
+    container_name: hospital-portal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://hospital:hospital_password@postgres:5432/hospital_db"
+      PORT: "8080"
+      INTEGRITY_SECRET: "test-secret"
+    ports:
+      - "8080:8080"
+    networks:
+      - hospital-network
+    restart: unless-stopped
+
+  test:
+    image: python:3.12-slim                # используем готовый образ
+    container_name: hospital-tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+      portal:
+        condition: service_healthy
+      pharmacy:
+        condition: service_healthy
+      laboratory:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+    environment:
+      PORTAL_URL: http://portal:8080
+      PHARMACY_URL: http://pharmacy:8081
+      LAB_URL: http://laboratory:8000
+      LLM_URL: http://llm:8000
+      DATABASE_URL: postgresql://hospital:hospital_password@postgres:5432/hospital_db
+      INTEGRITY_SECRET: "test-secret"
+    working_dir: /app
+    volumes:
+      - ./test:/app/test                   # монтируем всю папку test
+    command: >
+      sh -c "pip install --no-cache-dir -r /app/test/requirements-test.txt &&
+             pytest /app/test/test_system_scenarios.py -v"
+    networks:
+      - hospital-network
+    restart: "no"
+
+networks:
+  hospital-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local

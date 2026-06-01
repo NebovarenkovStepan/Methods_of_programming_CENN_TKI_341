@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hospital-tests-dcd6d5ee
+  annotations:
+    argocd.argoproj.io/hook: PostSync 
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/tests:efed0d14a1b17129ad42ed4facfe74d638232c7f
+          env:
+            - name: PORTAL_URL
+              value: http://portal:8080
+            - name: PHARMACY_URL
+              value: http://pharmacy:8081
+            - name: LAB_URL
+              value: http://laboratory:8000
+            - name: LLM_URL
+              value: http://llm:8000
+            - name: DATABASE_URL
+              value: postgresql://hospital:hospital_password@postgres:5432/hospital_db
+          command: ["python"]
+
+          args:
+            - "-m"
+            - "pytest"
+            - "/app/test/test_system_scenarios.py"
+            - "-v"
+            - "--tb=short"
+        

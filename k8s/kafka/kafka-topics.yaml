@@ -1,0 +1,65 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: lab-investigation-created
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: hospital-kafka
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: lab-investigation-completed
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: hospital-kafka
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: prescription-created
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: hospital-kafka
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: prescription-dispensed
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: hospital-kafka
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: llm-analysis-requested
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: hospital-kafka
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: llm-analysis-completed
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: hospital-kafka
+spec:
+  partitions: 1
+  replicas: 1

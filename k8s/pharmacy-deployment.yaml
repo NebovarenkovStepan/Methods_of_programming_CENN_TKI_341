@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pharmacy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pharmacy
+  template:
+    metadata:
+      labels:
+        app: pharmacy
+    spec:
+      containers:
+        - name: pharmacy
+          image: ghcr.io/nebovarenkovstepan/methods_of_programming_cenn_tki_341/pharmacy:efed0d14a1b17129ad42ed4facfe74d638232c7f
+          env:
+            - name: DATABASE_URL
+              value: "postgres://hospital:hospital_password@postgres:5432/hospital_db?sslmode=disable"
+            - name: PORT
+              value: "8081"
+            - name: INTEGRITY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: integrity-secret
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "hospital-kafka-kafka-bootstrap.kafka:9092"
+          ports:
+            - containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 15
